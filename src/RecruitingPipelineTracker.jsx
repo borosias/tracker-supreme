@@ -94,23 +94,71 @@ const NEXT_ACTION_TYPES = {
 
 const CONFIG_KEY = 'recruiting-pipeline-config-v1';
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const pad2 = (value) => String(value).padStart(2, '0');
+
+const todayISO = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+};
+
+const toDateParts = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+};
+
+const normalizeDateOnly = (value) => {
+  if (!value) return '';
+  if (value instanceof Date) return toDateParts(value);
+  if (typeof value === 'number') {
+    const date = new Date(Math.round((value - 25569) * 86400 * 1000));
+    return toDateParts(date);
+  }
+
+  const raw = textValue(value).trim();
+  if (!raw) return '';
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${pad2(month)}-${pad2(day)}`;
+  }
+
+  const localMatch = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (localMatch) {
+    const [, day, month, year] = localMatch;
+    return `${year}-${pad2(month)}-${pad2(day)}`;
+  }
+
+  const parsed = new Date(raw);
+  return toDateParts(parsed);
+};
+
+const safeDate = (value) => {
+  const iso = normalizeDateOnly(value);
+  if (!iso) return null;
+  const [year, month, day] = iso.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+};
 
 const addDays = (iso, days) => {
-  const base = new Date((iso || todayISO()) + 'T00:00:00');
+  const base = safeDate(iso) || safeDate(todayISO()) || new Date();
   base.setDate(base.getDate() + days);
-  return base.toISOString().slice(0, 10);
+  return toDateParts(base);
 };
 
 const fmtDate = (iso) => {
-  if (!iso) return '—';
-  const d = new Date(iso + 'T00:00:00');
+  const d = safeDate(iso);
+  if (!d) return '—';
   return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 };
 
 const fmtDateTime = (iso) => {
   if (!iso) return '—';
-  return new Date(iso).toLocaleString('ru-RU', {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU', {
     day: 'numeric',
     month: 'short',
     hour: '2-digit',
@@ -119,6 +167,8 @@ const fmtDateTime = (iso) => {
 };
 
 const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+const compareDateAsc = (a, b) => (normalizeDateOnly(a) || '9999-12-31').localeCompare(normalizeDateOnly(b) || '9999-12-31');
 
 const storageGet = async (key) => {
   try {
@@ -193,7 +243,7 @@ const cleanProcess = (process) => ({
   statusReason: textValue(process.statusReason),
   statusNote: textValue(process.statusNote),
   nextActionType: process.nextActionType || 'follow_up',
-  nextActionDate: process.nextActionDate || todayISO(),
+  nextActionDate: normalizeDateOnly(process.nextActionDate) || todayISO(),
   nextActionTime: textValue(process.nextActionTime),
   nextActionNote: textValue(process.nextActionNote),
   salary: textValue(process.salary),
@@ -228,7 +278,7 @@ const createEvent = (process, type, note = '', patch = {}) => ({
   calendarEventId: patch.calendarEventId || process.calendarEventId || '',
 });
 
-const sortByDateAsc = (a, b) => (a.nextActionDate || '').localeCompare(b.nextActionDate || '');
+const sortByDateAsc = (a, b) => compareDateAsc(a.nextActionDate, b.nextActionDate);
 
 function callAppsScript(config, payload) {
   if (!config.apiUrl) {
@@ -297,7 +347,8 @@ export default function RecruitingPipelineTracker() {
     () =>
       processes
         .filter((process) => {
-          const due = process.nextActionDate && process.nextActionDate <= todayISO();
+          const actionDate = normalizeDateOnly(process.nextActionDate);
+          const due = actionDate && actionDate <= todayISO();
           return due && ACTIVE_WORK_STATES.includes(process.workState);
         })
         .sort(sortByDateAsc),
@@ -369,8 +420,10 @@ export default function RecruitingPipelineTracker() {
       setDraft(null);
       setSelectedId(cleaned.id);
       showToast('Сохранено в Google Sheet');
+      return cleaned;
     } catch (error) {
       showToast(error.message);
+      return null;
     } finally {
       setSaving(false);
     }
@@ -397,7 +450,7 @@ export default function RecruitingPipelineTracker() {
       lastEventAt: new Date().toISOString(),
     });
     const event = createEvent(process, type, note, patch);
-    await persistProcess(nextProcess, event);
+    return await persistProcess(nextProcess, event);
   };
 
   const importSource = async () => {
@@ -441,7 +494,7 @@ export default function RecruitingPipelineTracker() {
   const syncCalendar = async (process) => {
     setSaving(true);
     try {
-      const data = await callAppsScript(config, { action: 'syncCalendar', processId: process.id });
+      const data = await callAppsScript(config, { action: 'syncCalendar', processId: process.id, process: cleanProcess(process) });
       if (data.process) {
         const cleaned = cleanProcess(data.process);
         setProcesses((prev) => prev.map((item) => (item.id === cleaned.id ? cleaned : item)));
@@ -479,7 +532,7 @@ export default function RecruitingPipelineTracker() {
 
       <Nav view={view} setView={setView} />
 
-      <main className="px-4 pb-28 sm:px-6">
+      <main className="app-main px-4 pb-28 sm:px-6">
         {view === 'today' && (
           <TodayView
             items={todayItems}
@@ -511,7 +564,7 @@ export default function RecruitingPipelineTracker() {
       {view !== 'settings' && (
         <button
           onClick={() => setDraft(emptyProcess())}
-          className="fixed bottom-5 right-5 flex items-center justify-center shadow-lg"
+          className="fab fixed bottom-5 right-5 flex items-center justify-center shadow-lg"
           style={{ width: 52, height: 52, background: '#E8A33D', color: '#16191F', borderRadius: 6 }}
           title="Добавить hiring process"
         >
@@ -546,7 +599,7 @@ export default function RecruitingPipelineTracker() {
 
       {toast && (
         <div
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 px-4 py-2 font-mono text-xs"
+          className="toast fixed bottom-5 left-1/2 -translate-x-1/2 px-4 py-2 font-mono text-xs"
           style={{ zIndex: 80, background: '#EDEEF0', color: '#16191F', borderRadius: 6 }}
         >
           {toast}
@@ -558,7 +611,7 @@ export default function RecruitingPipelineTracker() {
 
 function Shell({ children }) {
   return (
-    <div style={{ background: '#15181E', minHeight: '100vh', color: '#EDEEF0' }}>
+    <div className="app-shell" style={{ background: '#15181E', color: '#EDEEF0' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         .font-display { font-family: 'Space Grotesk', sans-serif; }
@@ -575,10 +628,10 @@ function Shell({ children }) {
 
 function Header({ stats, loading, onReload }) {
   return (
-    <header className="px-4 pt-5 pb-4 sm:px-6" style={{ borderBottom: '1px solid #2B303B' }}>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-display text-2xl font-semibold">Recruiting Pipeline</h1>
+    <header className="app-header px-4 pt-5 pb-4 sm:px-6" style={{ borderBottom: '1px solid #2B303B' }}>
+      <div className="app-header-bar flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="app-title font-display text-2xl font-semibold">Recruiting Pipeline</h1>
           <p className="font-mono mt-1 text-xs" style={{ color: '#8B92A0' }}>
             {stats.active} активных · {stats.action} требуют действия · {stats.waiting} ждут · {stats.offers} офферов
           </p>
@@ -604,7 +657,7 @@ function Nav({ view, setView }) {
     ['settings', 'API', Settings],
   ];
   return (
-    <nav className="flex gap-1 px-4 pt-4 sm:px-6">
+    <nav className="app-tabs flex gap-1 px-4 pt-4 sm:px-6">
       {items.map(([key, label, Icon]) => (
         <button
           key={key}
@@ -862,16 +915,17 @@ function SettingsView({ config, onSave, loading }) {
 }
 
 function ProcessRow({ process, lastEvent, onOpen }) {
-  const overdue = process.nextActionDate && process.nextActionDate < todayISO();
+  const actionDate = normalizeDateOnly(process.nextActionDate);
+  const overdue = actionDate && actionDate < todayISO();
   return (
     <button
       onClick={() => onOpen(process.id)}
-      className="w-full py-3 text-left"
+      className="process-row w-full py-3 text-left"
       style={{ borderBottom: '1px solid #2B303B' }}
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="process-row-head flex items-center justify-between gap-3">
         <ProcessIdentity process={process} />
-        <div className="flex-shrink-0 text-right font-mono text-xs" style={{ color: overdue ? '#C56B5D' : '#8B92A0' }}>
+        <div className="process-date flex-shrink-0 text-right font-mono text-xs" style={{ color: overdue ? '#C56B5D' : '#8B92A0' }}>
           {fmtDate(process.nextActionDate)}
           <div>{NEXT_ACTION_TYPES[process.nextActionType] || 'Действие'}</div>
         </div>
@@ -889,16 +943,16 @@ function ProcessCard({ process, lastEvent, onOpen }) {
   return (
     <button
       onClick={() => onOpen(process.id)}
-      className="mb-2 w-full p-3 text-left"
+      className="process-card mb-2 w-full p-3 text-left"
       style={{ background: '#1E222B', border: '1px solid #2B303B', borderRadius: 6 }}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="process-card-head flex items-start justify-between gap-3">
         <ProcessIdentity process={process} />
         <StatePill state={process.workState} />
       </div>
-      <div className="mt-3 flex items-center justify-between gap-3 font-mono text-xs" style={{ color: '#8B92A0' }}>
-        <span>{process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType] || 'Нет действия'}</span>
-        <span>{fmtDate(process.nextActionDate)}</span>
+      <div className="process-meta-row mt-3 flex items-center justify-between gap-3 font-mono text-xs" style={{ color: '#8B92A0' }}>
+        <span className="process-card-note">{process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType] || 'Нет действия'}</span>
+        <span className="process-date">{fmtDate(process.nextActionDate)}</span>
       </div>
       {(process.statusReason || lastEvent) && (
         <div className="mt-2 truncate font-mono text-xs" style={{ color: process.workState === 'lost' ? '#C56B5D' : '#666D7A' }}>
@@ -912,7 +966,7 @@ function ProcessCard({ process, lastEvent, onOpen }) {
 function ProcessIdentity({ process }) {
   const stage = HIRING_STAGES[process.hiringStage] || HIRING_STAGES.application;
   return (
-    <div className="min-w-0">
+    <div className="process-identity min-w-0">
       <div className="flex items-center gap-2">
         <span style={{ width: 7, height: 7, background: stage.color, display: 'inline-block', flexShrink: 0 }} />
         <span className="truncate font-mono text-sm">{process.title || process.role || process.companyName || 'Без названия'}</span>
@@ -927,7 +981,7 @@ function ProcessIdentity({ process }) {
 function StatePill({ state }) {
   const item = WORK_STATES[state] || WORK_STATES.active;
   return (
-    <span className="flex-shrink-0 px-2 py-1 font-mono text-xs" style={{ color: item.color, border: `1px solid ${item.color}` }}>
+    <span className="state-pill flex-shrink-0 px-2 py-1 font-mono text-xs" style={{ color: item.color, border: `1px solid ${item.color}` }}>
       {item.label}
     </span>
   );
@@ -938,34 +992,35 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
   const set = (key, value) => setEventDraft((current) => ({ ...current, [key]: value }));
 
   const quick = async (type) => {
+    let savedProcess;
     if (type === 'message_sent') {
-      await onEvent(process, type, eventDraft.note || 'Отправлено сообщение / follow-up', {
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Отправлено сообщение / follow-up', {
         workState: 'waiting',
         nextActionDate: addDays(todayISO(), 3),
         nextActionType: 'follow_up',
         nextActionNote: 'Проверить, ответил ли рекрутер',
       });
     } else if (type === 'reply_received') {
-      await onEvent(process, type, eventDraft.note || 'Получен ответ', { workState: 'active' });
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Получен ответ', { workState: 'active' });
     } else if (type === 'interview_scheduled') {
-      await onEvent(process, type, eventDraft.note || 'Назначено интервью', {
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Назначено интервью', {
         workState: 'active',
         nextActionType: 'interview',
         nextActionDate: process.nextActionDate || todayISO(),
         nextActionNote: process.nextActionNote || 'Подготовиться к интервью',
       });
     } else if (type === 'paused') {
-      await onEvent(process, type, eventDraft.note || 'Процесс поставлен на паузу', {
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Процесс поставлен на паузу', {
         workState: 'paused',
         statusReason: eventDraft.reason || 'project_postponed',
       });
     } else if (type === 'lost') {
-      await onEvent(process, type, eventDraft.note || 'Процесс отвалился', {
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Процесс отвалился', {
         workState: 'lost',
         statusReason: eventDraft.reason || 'other',
       });
     } else if (type === 'offer_received') {
-      await onEvent(process, type, eventDraft.note || 'Получен оффер', {
+      savedProcess = await onEvent(process, type, eventDraft.note || 'Получен оффер', {
         hiringStage: 'offer',
         workState: 'offer_received',
         nextActionType: 'decision',
@@ -973,21 +1028,24 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
         nextActionNote: 'Принять решение по офферу',
       });
     } else if (type === 'offer_accept') {
-      await onEvent(process, 'offer_decided', eventDraft.note || 'Оффер принят', {
+      savedProcess = await onEvent(process, 'offer_decided', eventDraft.note || 'Оффер принят', {
         hiringStage: 'offer',
         workState: 'offer_accepted',
         nextActionType: 'none',
         nextActionNote: 'Оффер принят',
       });
     } else if (type === 'offer_decline') {
-      await onEvent(process, 'offer_decided', eventDraft.note || 'Оффер отклонён', {
+      savedProcess = await onEvent(process, 'offer_decided', eventDraft.note || 'Оффер отклонён', {
         hiringStage: 'offer',
         workState: 'offer_declined',
         nextActionType: 'none',
         nextActionNote: 'Оффер отклонён',
       });
     } else {
-      await onEvent(process, type, eventDraft.note || EVENT_TYPES[type]?.label || type);
+      savedProcess = await onEvent(process, type, eventDraft.note || EVENT_TYPES[type]?.label || type);
+    }
+    if (savedProcess && ['message_sent', 'interview_scheduled', 'offer_received'].includes(type)) {
+      await onSyncCalendar(savedProcess);
     }
     setEventDraft({ type: 'note_added', note: '', reason: process.statusReason || '' });
   };
@@ -1010,8 +1068,8 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
         ];
 
   return (
-    <div className="fixed inset-0 flex justify-end" style={{ zIndex: 60, background: 'rgba(0,0,0,0.55)' }}>
-      <aside className="scroll-thin h-full w-full max-w-2xl overflow-y-auto p-5" style={{ background: '#1A1E26', borderLeft: '1px solid #2B303B' }}>
+    <div className="drawer-backdrop fixed inset-0 flex justify-end" style={{ zIndex: 60, background: 'rgba(0,0,0,0.55)' }}>
+      <aside className="drawer-panel scroll-thin h-full w-full max-w-2xl overflow-y-auto p-5" style={{ background: '#1A1E26', borderLeft: '1px solid #2B303B' }}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="font-display text-xl font-semibold">{process.title || process.companyName || 'Hiring process'}</h2>
@@ -1029,6 +1087,7 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
           <InfoLine icon={Briefcase} label="Роль" value={process.role || '—'} />
           <InfoLine icon={Clock} label="Next action" value={`${fmtDate(process.nextActionDate)} · ${process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType]}`} />
           <InfoLine icon={AlertTriangle} label="Состояние" value={WORK_STATES[process.workState]?.label || process.workState} />
+          <InfoLine icon={CalendarDays} label="Calendar" value={process.calendarEventId ? 'Синхронизирован' : 'Не синхронизирован'} />
         </div>
 
         {process.sourceUrl && (
@@ -1050,7 +1109,7 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
           </button>
           <button onClick={() => onSyncCalendar(process)} disabled={saving} className="px-3 py-2 font-mono text-xs" style={secondaryButtonStyle}>
             <span className="inline-flex items-center gap-1">
-              <CalendarDays size={14} /> Sync Calendar
+              <CalendarDays size={14} /> {process.calendarEventId ? 'Update Calendar' : 'Sync Calendar'}
             </span>
           </button>
         </div>
@@ -1107,8 +1166,8 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
 function ProcessForm({ draft, setDraft, saving, onClose, onSave }) {
   const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
   return (
-    <div className="fixed inset-0 flex items-end justify-center sm:items-center" style={{ zIndex: 70, background: 'rgba(0,0,0,0.58)' }}>
-      <div className="scroll-thin max-h-[92vh] w-full max-w-2xl overflow-y-auto p-5" style={{ background: '#1E222B', border: '1px solid #2B303B' }}>
+    <div className="form-backdrop fixed inset-0 flex items-end justify-center sm:items-center" style={{ zIndex: 70, background: 'rgba(0,0,0,0.58)' }}>
+      <div className="form-panel scroll-thin max-h-[92vh] w-full max-w-2xl overflow-y-auto p-5" style={{ background: '#1E222B', border: '1px solid #2B303B' }}>
         <div className="flex items-center justify-between">
           <h2 className="font-display text-lg font-semibold">Hiring process</h2>
           <button onClick={onClose}>

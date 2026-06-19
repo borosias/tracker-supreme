@@ -126,6 +126,81 @@ select option {
   color: #edeef0;
 }
 
+.app-shell {
+  min-height: 100vh;
+  min-height: 100svh;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.app-header {
+  padding-top: calc(1.25rem + env(safe-area-inset-top));
+}
+
+.app-title {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.app-tabs {
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.app-tabs > button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.app-main {
+  padding-bottom: calc(7rem + env(safe-area-inset-bottom));
+}
+
+.fab {
+  bottom: calc(1.25rem + env(safe-area-inset-bottom));
+  right: calc(1.25rem + env(safe-area-inset-right));
+}
+
+.toast {
+  bottom: calc(1.25rem + env(safe-area-inset-bottom));
+}
+
+.process-card,
+.process-row {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.process-card-note {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+}
+
+.process-date {
+  white-space: nowrap;
+}
+
+.state-pill {
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.drawer-panel,
+.form-panel {
+  padding-top: calc(1.25rem + env(safe-area-inset-top));
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+}
+
+.form-panel {
+  max-height: calc(100svh - env(safe-area-inset-top));
+}
+
 @media (min-width: 640px) {
   .sm\:px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
   .sm\:mx-6 { margin-left: 1.5rem; margin-right: 1.5rem; }
@@ -134,7 +209,65 @@ select option {
   .sm\:items-center { align-items: center; }
 }
 
+@media (max-width: 520px) {
+  .app-header-bar {
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .app-title {
+    font-size: 2rem;
+    line-height: 2.25rem;
+  }
+
+  .app-header button {
+    min-height: 42px;
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+
+  .process-card {
+    padding: 1rem;
+  }
+
+  .process-card-head {
+    align-items: flex-start;
+    display: grid;
+    gap: 0.625rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .process-card-head .state-pill {
+    justify-self: start;
+    margin-left: 1rem;
+  }
+
+  .process-meta-row {
+    align-items: start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .process-row-head {
+    align-items: flex-start;
+  }
+
+  .drawer-panel {
+    border-left: 0 !important;
+  }
+
+  .form-backdrop {
+    align-items: stretch;
+  }
+
+  .form-panel {
+    border-left: 0 !important;
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+    max-height: 100svh;
+  }
+}
+
 @media (min-width: 1280px) {
   .xl\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-

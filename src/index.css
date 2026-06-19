@@ -4,11 +4,14 @@
 
 html {
   background: #15181e;
+  min-height: 100%;
 }
 
 body {
   margin: 0;
   min-width: 320px;
+  min-height: 100vh;
+  min-height: 100svh;
   background: #15181e;
 }
 
@@ -29,5 +32,5 @@ a {
 
 #root {
   min-height: 100vh;
+  min-height: 100svh;
 }
-

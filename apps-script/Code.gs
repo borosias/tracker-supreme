@@ -83,7 +83,9 @@ function doPost(e) {
       case 'listProcesses':
         return json_({
           ok: true,
-          processes: readObjects_(SHEETS.processes.name),
+          processes: readObjects_(SHEETS.processes.name).map(function (process) {
+            return normalizeProcessForClient_(process);
+          }),
           events: readObjects_(SHEETS.events.name),
           contacts: readObjects_(SHEETS.contacts.name),
           sources: readObjects_(SHEETS.sources.name),
@@ -206,7 +208,7 @@ function upsertProcess_(process) {
     statusReason: process.statusReason || '',
     statusNote: process.statusNote || '',
     nextActionType: process.nextActionType || 'follow_up',
-    nextActionDate: process.nextActionDate || dateOnly_(now),
+    nextActionDate: normalizeDateOnly_(process.nextActionDate) || dateOnly_(now),
     nextActionTime: process.nextActionTime || '',
     nextActionNote: process.nextActionNote || '',
     salary: process.salary || '',
@@ -578,24 +580,47 @@ function syncCalendar_(processId, processPayload) {
     return item.id === processId;
   });
   if (!process) throw new Error('Process not found: ' + processId);
-  if (!process.nextActionDate) throw new Error('Process has no nextActionDate');
+  const actionDate = normalizeDateOnly_(process.nextActionDate);
+  if (!actionDate) throw new Error('Process has no valid nextActionDate');
+  process.nextActionDate = actionDate;
 
   const calendar = CalendarApp.getDefaultCalendar();
   const title = calendarTitle_(process);
-  let calendarEvent;
+  const description = calendarDescription_(process);
+  let calendarEvent = null;
+  if (process.calendarEventId) {
+    try {
+      calendarEvent = calendar.getEventById(process.calendarEventId);
+    } catch (error) {
+      calendarEvent = null;
+    }
+  }
 
   if (process.nextActionType === 'interview' && process.nextActionTime) {
-    const start = new Date(process.nextActionDate + 'T' + process.nextActionTime + ':00');
+    const start = calendarDateTime_(actionDate, process.nextActionTime);
+    if (!start) throw new Error('Process has no valid nextActionTime');
     const end = new Date(start.getTime() + 60 * 60 * 1000);
-    calendarEvent = calendar.createEvent(title, start, end, {
-      description: calendarDescription_(process),
-    });
+    if (calendarEvent) {
+      calendarEvent.setTitle(title);
+      calendarEvent.setDescription(description);
+      calendarEvent.setTime(start, end);
+    } else {
+      calendarEvent = calendar.createEvent(title, start, end, {
+        description: description,
+      });
+    }
   } else {
-    const dateParts = process.nextActionDate.split('-').map(Number);
-    const day = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
-    calendarEvent = calendar.createAllDayEvent(title, day, {
-      description: calendarDescription_(process),
-    });
+    const day = calendarDate_(actionDate);
+    if (!day) throw new Error('Process has no valid nextActionDate');
+    if (calendarEvent) {
+      calendarEvent.setTitle(title);
+      calendarEvent.setDescription(description);
+      calendarEvent.setAllDayDate(day);
+    } else {
+      calendarEvent = calendar.createAllDayEvent(title, day, {
+        description: description,
+      });
+    }
   }
 
   process.calendarEventId = calendarEvent.getId();
@@ -671,6 +696,85 @@ function makeId_(prefix) {
   return prefix + '_' + Utilities.getUuid().replace(/-/g, '').slice(0, 16);
 }
 
+function normalizeProcessForClient_(process) {
+  const normalized = {};
+  Object.keys(process || {}).forEach(function (key) {
+    normalized[key] = process[key];
+  });
+  normalized.nextActionDate = normalizeDateOnly_(normalized.nextActionDate);
+  return normalized;
+}
+
+function normalizeDateOnly_(value) {
+  if (!value) return '';
+
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    return formatDateOnly_(value);
+  }
+
+  if (typeof value === 'number') {
+    return formatDateOnly_(new Date(Math.round((value - 25569) * 86400 * 1000)));
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  const first = raw.split('T')[0].trim();
+  const isoParts = first.split('-');
+  if (isoParts.length >= 3 && String(isoParts[0]).length === 4) {
+    return validDateOnly_(isoParts[0], isoParts[1], isoParts[2]);
+  }
+
+  const localParts = splitLocalDate_(first);
+  if (localParts.length >= 3 && String(localParts[2]).length === 4) {
+    return validDateOnly_(localParts[2], localParts[1], localParts[0]);
+  }
+
+  return formatDateOnly_(new Date(raw));
+}
+
+function splitLocalDate_(value) {
+  const text = String(value || '');
+  if (text.indexOf('.') >= 0) return text.split('.');
+  if (text.indexOf('/') >= 0) return text.split('/');
+  if (text.indexOf('-') >= 0) return text.split('-');
+  return [];
+}
+
+function validDateOnly_(year, month, day) {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (!y || !m || !d) return '';
+  const date = new Date(y, m - 1, d);
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return '';
+  return formatDateOnly_(date);
+}
+
+function formatDateOnly_(date) {
+  if (Object.prototype.toString.call(date) !== '[object Date]' || isNaN(date.getTime())) return '';
+  return [date.getFullYear(), pad2_(date.getMonth() + 1), pad2_(date.getDate())].join('-');
+}
+
+function calendarDate_(dateOnly) {
+  const parts = normalizeDateOnly_(dateOnly).split('-').map(Number);
+  if (parts.length < 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function calendarDateTime_(dateOnly, timeValue) {
+  const date = calendarDate_(dateOnly);
+  if (!date) return null;
+  const timeParts = String(timeValue || '').split(':').map(Number);
+  if (timeParts.length < 2 || isNaN(timeParts[0]) || isNaN(timeParts[1])) return null;
+  date.setHours(timeParts[0], timeParts[1], 0, 0);
+  return date;
+}
+
+function pad2_(value) {
+  return String(value).padStart(2, '0');
+}
+
 function dateOnly_(iso) {
-  return String(iso || new Date().toISOString()).slice(0, 10);
+  return normalizeDateOnly_(iso) || formatDateOnly_(new Date());
 }
