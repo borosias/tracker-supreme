@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tracker Supreme">
+  <rect width="512" height="512" rx="96" fill="#15181e"/>
+  <path d="M116 126h280v58H116z" fill="#23272f"/>
+  <path d="M116 227h280v58H116z" fill="#23272f"/>
+  <path d="M116 328h280v58H116z" fill="#23272f"/>
+  <circle cx="145" cy="155" r="17" fill="#e8a33d"/>
+  <circle cx="145" cy="256" r="17" fill="#4fb3bf"/>
+  <circle cx="145" cy="357" r="17" fill="#6fae8a"/>
+  <path d="M187 151h151v11H187zM187 252h119v11H187zM187 353h173v11H187z" fill="#edeef0"/>
+  <path d="M386 126h20v260h-20z" fill="#e8a33d"/>
+</svg>
+
