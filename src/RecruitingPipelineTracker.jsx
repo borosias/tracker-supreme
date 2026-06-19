@@ -93,6 +93,17 @@ const NEXT_ACTION_TYPES = {
 };
 
 const CONFIG_KEY = 'recruiting-pipeline-config-v1';
+const STAGE_PREVIEW_LIMIT = 3;
+const WORK_STATE_FILTER_ORDER = [
+  'action_required',
+  'waiting',
+  'active',
+  'paused',
+  'lost',
+  'offer_received',
+  'offer_accepted',
+  'offer_declined',
+];
 
 const pad2 = (value) => String(value).padStart(2, '0');
 
@@ -279,6 +290,38 @@ const createEvent = (process, type, note = '', patch = {}) => ({
 });
 
 const sortByDateAsc = (a, b) => compareDateAsc(a.nextActionDate, b.nextActionDate);
+
+const sortStageItems = (items) =>
+  [...items].sort((a, b) => {
+    const stateOrder = Number(b.workState === 'action_required') - Number(a.workState === 'action_required');
+    return stateOrder || sortByDateAsc(a, b);
+  });
+
+const getSortedStageItems = (processes, stageKey) => sortStageItems(processes.filter((process) => process.hiringStage === stageKey));
+
+const getFilteredStageItems = (items, filter) => (filter && filter !== 'all' ? items.filter((process) => process.workState === filter) : items);
+
+const getVisiblePreviewItems = (items, limit = STAGE_PREVIEW_LIMIT) => items.slice(0, limit);
+
+const getStageFilterOptions = (items) => {
+  const counts = new Map();
+  items.forEach((process) => {
+    counts.set(process.workState, (counts.get(process.workState) || 0) + 1);
+  });
+  const ordered = WORK_STATE_FILTER_ORDER.filter((state) => counts.has(state));
+  const extras = [...counts.keys()].filter((state) => !WORK_STATE_FILTER_ORDER.includes(state)).sort();
+  return [
+    { key: 'all', label: 'Все', count: items.length },
+    ...[...ordered, ...extras].map((state) => ({
+      key: state,
+      label: WORK_STATES[state]?.label || state,
+      count: counts.get(state) || 0,
+    })),
+  ];
+};
+
+const isCoarsePointer = () =>
+  typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(hover: none), (pointer: coarse)').matches;
 
 function callAppsScript(config, payload) {
   if (!config.apiUrl) {
@@ -754,6 +797,26 @@ function TodayView({ items, processes, eventsByProcess, onOpen, onAdd }) {
 }
 
 function FunnelView({ processes, eventsByProcess, onOpen, onAdd }) {
+  const [hoveredStageId, setHoveredStageId] = useState(null);
+  const [pinnedStageId, setPinnedStageId] = useState(null);
+  const [mobileExpandedStageId, setMobileExpandedStageId] = useState(null);
+  const [stageFilters, setStageFilters] = useState({});
+
+  useEffect(() => {
+    const closeOpenStage = (event) => {
+      const target = event.target;
+      const element = target?.closest ? target : target?.parentElement;
+      if (!element?.closest?.('[data-stage-folder="true"]')) {
+        setHoveredStageId(null);
+        setPinnedStageId(null);
+        setMobileExpandedStageId(null);
+      }
+    };
+
+    document.addEventListener('pointerdown', closeOpenStage);
+    return () => document.removeEventListener('pointerdown', closeOpenStage);
+  }, []);
+
   if (processes.length === 0) {
     return (
       <EmptyState
@@ -766,35 +829,159 @@ function FunnelView({ processes, eventsByProcess, onOpen, onAdd }) {
     );
   }
 
+  const openStageId = mobileExpandedStageId || pinnedStageId || hoveredStageId;
+
   return (
-    <div className="grid gap-4 pt-4 xl:grid-cols-2">
+    <div className="funnel-grid grid gap-4 pt-4 xl:grid-cols-2">
       {HIRING_STAGE_ORDER.map((stageKey) => {
         const stage = HIRING_STAGES[stageKey];
-        const items = processes
-          .filter((process) => process.hiringStage === stageKey)
-          .sort((a, b) => {
-            const stateOrder = Number(b.workState === 'action_required') - Number(a.workState === 'action_required');
-            return stateOrder || sortByDateAsc(a, b);
-          });
+        const items = getSortedStageItems(processes, stageKey);
+        const filter = stageFilters[stageKey] || 'all';
+        const isPinned = pinnedStageId === stageKey;
+        const isOpen = openStageId === stageKey;
         return (
-          <section key={stageKey} className="min-w-0">
-            <SectionTitle title={stage.label} count={items.length} color={stage.color} />
-            {items.length === 0 ? (
-              <InlineEmpty text="Нет процессов на этом этапе." />
-            ) : (
-              items.map((process) => (
-                <ProcessCard
-                  key={process.id}
-                  process={process}
-                  lastEvent={(eventsByProcess.get(process.id) || [])[0]}
-                  onOpen={onOpen}
-                />
-              ))
-            )}
-          </section>
+          <StageFolder
+            key={stageKey}
+            stageKey={stageKey}
+            stage={stage}
+            items={items}
+            filter={filter}
+            isOpen={isOpen}
+            isPinned={isPinned}
+            eventsByProcess={eventsByProcess}
+            onOpen={onOpen}
+            onHover={setHoveredStageId}
+            onToggle={() => {
+              if (isCoarsePointer()) {
+                setPinnedStageId(null);
+                setMobileExpandedStageId((current) => (current === stageKey ? null : stageKey));
+                return;
+              }
+              setMobileExpandedStageId(null);
+              setPinnedStageId((current) => (current === stageKey ? null : stageKey));
+            }}
+            onFilterChange={(nextFilter) =>
+              setStageFilters((current) => ({
+                ...current,
+                [stageKey]: nextFilter,
+              }))
+            }
+          />
         );
       })}
     </div>
+  );
+}
+
+function StageFolder({
+  stageKey,
+  stage,
+  items,
+  filter,
+  isOpen,
+  isPinned,
+  eventsByProcess,
+  onOpen,
+  onHover,
+  onToggle,
+  onFilterChange,
+}) {
+  const filterOptions = getStageFilterOptions(items);
+  const selectedFilter = filterOptions.some((option) => option.key === filter) ? filter : 'all';
+  const filteredItems = getFilteredStageItems(items, selectedFilter);
+  const previewItems = getVisiblePreviewItems(items);
+  const hiddenCount = Math.max(items.length - previewItems.length, 0);
+
+  return (
+    <section
+      data-stage-folder="true"
+      data-stage-key={stageKey}
+      className={`stage-folder min-w-0 ${isOpen ? 'is-open' : ''} ${isPinned ? 'is-pinned' : ''}`}
+      style={{ '--stage-color': stage.color }}
+      onMouseEnter={() => onHover(stageKey)}
+      onMouseLeave={() => onHover((current) => (current === stageKey ? null : current))}
+      onFocus={() => onHover(stageKey)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          onHover((current) => (current === stageKey ? null : current));
+        }
+      }}
+    >
+      <button
+        type="button"
+        className="stage-folder-head"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+      >
+        <span className="stage-folder-title font-display text-sm font-semibold">{stage.label}</span>
+        <span className="stage-folder-meta font-mono text-xs">
+          <span>{items.length}</span>
+          <span className="stage-folder-indicator">{isOpen ? 'открыто' : 'папка'}</span>
+        </span>
+      </button>
+
+      {items.length === 0 ? (
+        <InlineEmpty text="Нет процессов на этом этапе." />
+      ) : (
+        <>
+          <div className="stage-folder-preview" aria-hidden={isOpen ? 'true' : undefined}>
+            <div className="stage-folder-card-stack">
+              {previewItems.map((process, index) => (
+                <div key={process.id} className="stage-folder-preview-item" style={{ '--stack-index': index }}>
+                  <ProcessCard
+                    process={process}
+                    lastEvent={(eventsByProcess.get(process.id) || [])[0]}
+                    onOpen={onOpen}
+                  />
+                </div>
+              ))}
+            </div>
+            {hiddenCount > 0 && (
+              <button type="button" className="stage-folder-more font-mono text-xs" onClick={onToggle} tabIndex={isOpen ? -1 : 0}>
+                +{hiddenCount} ещё
+              </button>
+            )}
+          </div>
+
+          {isOpen && (
+            <div className="stage-folder-expanded">
+              <div className="stage-filter-chips">
+                {filterOptions.map((option) => {
+                  const active = selectedFilter === option.key;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={`stage-filter-chip font-mono text-xs ${active ? 'is-active' : ''}`}
+                      onClick={() => onFilterChange(option.key)}
+                      aria-pressed={active}
+                    >
+                      {option.label}
+                      <span>{option.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {filteredItems.length === 0 ? (
+                <InlineEmpty text="Нет процессов с этим состоянием." />
+              ) : (
+                <div className="stage-folder-list scroll-thin">
+                  {filteredItems.map((process) => (
+                    <ProcessCard
+                      key={process.id}
+                      process={process}
+                      lastEvent={(eventsByProcess.get(process.id) || [])[0]}
+                      onOpen={onOpen}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
