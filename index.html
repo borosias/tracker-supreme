@@ -10,13 +10,71 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Tracker Supreme" />
-    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
-    <link rel="icon" type="image/svg+xml" href="%BASE_URL%pwa-icon.svg" />
-    <link rel="apple-touch-icon" href="%BASE_URL%pwa-icon-192.png" />
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        margin: 0;
+        background: #15181e;
+        color: #edeef0;
+      }
+    </style>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./pwa-icon.svg" />
+    <link rel="apple-touch-icon" href="./pwa-icon-192.png" />
     <title>Tracker Supreme</title>
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      ;(() => {
+        const params = new URLSearchParams(window.location.search)
+        if (!params.has('debug')) return
+
+        const showDebugMessage = (title, details = '') => {
+          let panel = document.getElementById('boot-debug-panel')
+          if (!panel) {
+            panel = document.createElement('pre')
+            panel.id = 'boot-debug-panel'
+            panel.style.cssText = [
+              'position:fixed',
+              'inset:12px',
+              'z-index:2147483647',
+              'overflow:auto',
+              'white-space:pre-wrap',
+              'padding:14px',
+              'border:1px solid #f59e0b',
+              'border-radius:8px',
+              'background:#15181e',
+              'color:#f8fafc',
+              'font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            ].join(';')
+            document.body.appendChild(panel)
+          }
+          panel.textContent = `[tracker debug]\n${title}\n\n${details}`.trim()
+        }
+
+        window.addEventListener('error', (event) => {
+          showDebugMessage('JavaScript error', `${event.message}\n${event.filename}:${event.lineno}:${event.colno}`)
+        })
+
+        window.addEventListener('unhandledrejection', (event) => {
+          const reason = event.reason
+          showDebugMessage('Unhandled promise rejection', reason?.stack || reason?.message || String(reason))
+        })
+
+        window.setTimeout(() => {
+          const root = document.getElementById('root')
+          if (root && root.childElementCount === 0) {
+            showDebugMessage(
+              'HTML loaded, but React did not render after 5 seconds',
+              `URL: ${window.location.href}\nUser agent: ${navigator.userAgent}`,
+            )
+          }
+        }, 5000)
+      })()
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

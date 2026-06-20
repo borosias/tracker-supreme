@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Activity,
+  BarChart3,
   Briefcase,
   CalendarDays,
   Check,
@@ -57,6 +59,18 @@ const STATUS_REASONS = {
   candidate_withdrew: 'Сам отказался',
   no_budget: 'Нет бюджета',
   other: 'Другое',
+};
+
+const STATUS_REASON_COLORS = {
+  client_rejected: '#C56B5D',
+  failed_interview: '#D88B62',
+  position_closed: '#E8A33D',
+  internal_hire: '#6E88D8',
+  recruiter_ghosted: '#9D7CD8',
+  project_postponed: '#B6A06B',
+  candidate_withdrew: '#8B92A0',
+  no_budget: '#B777E0',
+  other: '#666D7A',
 };
 
 const EVENT_TYPES = {
@@ -322,6 +336,34 @@ const getStageFilterOptions = (items) => {
 
 const isCoarsePointer = () =>
   typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(hover: none), (pointer: coarse)').matches;
+
+const daysBetween = (fromIso, toIso = todayISO()) => {
+  const from = safeDate(fromIso);
+  const to = safeDate(toIso);
+  if (!from || !to) return 0;
+  return Math.max(0, Math.floor((to.getTime() - from.getTime()) / 86400000));
+};
+
+const getLastActivityDate = (process, eventsByProcess) => {
+  const events = eventsByProcess.get(process.id) || [];
+  return normalizeDateOnly(events[0]?.occurredAt || process.lastEventAt || process.updatedAt || process.createdAt);
+};
+
+const countBy = (items, getKey) =>
+  items.reduce((map, item) => {
+    const key = getKey(item) || 'other';
+    map.set(key, (map.get(key) || 0) + 1);
+    return map;
+  }, new Map());
+
+const getRecentActivityBuckets = (events, days = 14) => {
+  const today = todayISO();
+  const counts = countBy(events, (event) => normalizeDateOnly(event.occurredAt));
+  return Array.from({ length: days }, (_, index) => {
+    const date = addDays(today, index - days + 1);
+    return { date, count: counts.get(date) || 0 };
+  });
+};
 
 function callAppsScript(config, payload) {
   if (!config.apiUrl) {
@@ -593,6 +635,16 @@ export default function RecruitingPipelineTracker() {
             onAdd={() => setDraft(emptyProcess())}
           />
         )}
+        {view === 'stats' && (
+          <StatsView
+            processes={processes}
+            events={events}
+            eventsByProcess={eventsByProcess}
+            todayItems={todayItems}
+            onOpen={setSelectedId}
+            onAdd={() => setDraft(emptyProcess())}
+          />
+        )}
         {view === 'import' && (
           <ImportView
             state={importState}
@@ -696,6 +748,7 @@ function Nav({ view, setView }) {
   const items = [
     ['today', 'Дела', Clock],
     ['funnel', 'Воронка', Briefcase],
+    ['stats', 'Статистика', BarChart3],
     ['import', 'Импорт', Sparkles],
     ['settings', 'API', Settings],
   ];
@@ -792,6 +845,295 @@ function TodayView({ items, processes, eventsByProcess, onOpen, onAdd }) {
           />
         ))
       )}
+    </div>
+  );
+}
+
+function StatsView({ processes, events, eventsByProcess, todayItems, onOpen, onAdd }) {
+  if (processes.length === 0) {
+    return (
+      <EmptyState
+        icon={BarChart3}
+        title="Статистика пустая"
+        text="Добавь несколько процессов, и тут появятся срезы по воронке, состояниям и активности."
+        actionLabel="Добавить процесс"
+        onAction={onAdd}
+      />
+    );
+  }
+
+  const total = processes.length;
+  const activeItems = processes.filter((process) => ACTIVE_WORK_STATES.includes(process.workState));
+  const lostItems = processes.filter((process) => process.workState === 'lost');
+  const pausedItems = processes.filter((process) => process.workState === 'paused');
+  const offerItems = processes.filter((process) => process.workState.startsWith('offer'));
+  const acceptedOffers = processes.filter((process) => process.workState === 'offer_accepted').length;
+  const overdueItems = todayItems.filter((process) => normalizeDateOnly(process.nextActionDate) < todayISO());
+  const recentActivity = getRecentActivityBuckets(events);
+  const maxActivity = Math.max(1, ...recentActivity.map((item) => item.count));
+
+  const stageRows = HIRING_STAGE_ORDER.map((stageKey) => {
+    const count = processes.filter((process) => process.hiringStage === stageKey).length;
+    const active = processes.filter(
+      (process) => process.hiringStage === stageKey && ACTIVE_WORK_STATES.includes(process.workState)
+    ).length;
+    return { key: stageKey, label: HIRING_STAGES[stageKey].label, count, active, color: HIRING_STAGES[stageKey].color };
+  });
+  const agingRows = HIRING_STAGE_ORDER.map((stageKey) => {
+    const stageItems = activeItems.filter((process) => process.hiringStage === stageKey);
+    const idleDays = stageItems.map((process) => daysBetween(getLastActivityDate(process, eventsByProcess) || process.createdAt));
+    const totalIdle = idleDays.reduce((sum, value) => sum + value, 0);
+    const avgDays = idleDays.length ? Math.round(totalIdle / idleDays.length) : 0;
+    const maxDays = idleDays.length ? Math.max(...idleDays) : 0;
+    return {
+      key: stageKey,
+      label: HIRING_STAGES[stageKey].label,
+      count: stageItems.length,
+      avgDays,
+      maxDays,
+      color: HIRING_STAGES[stageKey].color,
+    };
+  });
+
+  const stateCounts = countBy(processes, (process) => process.workState);
+  const stateRows = WORK_STATE_FILTER_ORDER.filter((state) => stateCounts.has(state)).map((state) => ({
+    key: state,
+    label: WORK_STATES[state]?.label || state,
+    count: stateCounts.get(state) || 0,
+    color: WORK_STATES[state]?.color || '#8B92A0',
+  }));
+
+  const reasonCounts = countBy(lostItems, (process) => process.statusReason || 'other');
+  const reasonRows = [...reasonCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, count]) => ({
+      key: reason,
+      label: STATUS_REASONS[reason] || reason,
+      count,
+      color: STATUS_REASON_COLORS[reason] || STATUS_REASON_COLORS.other,
+    }));
+
+  const sourceCounts = countBy(processes, (process) => process.sourceType || 'manual');
+  const sourceRows = [...sourceCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([source, count]) => ({
+      key: source,
+      label: SOURCE_TYPES[source] || source,
+      count,
+      color: source === 'linkedin' ? '#4FB3BF' : source === 'djinni' ? '#6E88D8' : '#8B92A0',
+    }));
+
+  const staleItems = activeItems
+    .map((process) => {
+      const lastActivity = getLastActivityDate(process, eventsByProcess);
+      const daysIdle = daysBetween(lastActivity || process.createdAt);
+      const actionDate = normalizeDateOnly(process.nextActionDate);
+      const overdue = actionDate && actionDate < todayISO();
+      return { process, lastActivity, daysIdle, overdue };
+    })
+    .filter((item) => item.overdue || item.daysIdle >= 7)
+    .sort((a, b) => Number(b.overdue) - Number(a.overdue) || b.daysIdle - a.daysIdle)
+    .slice(0, 5);
+
+  const agingMax = Math.max(1, ...agingRows.map((row) => row.avgDays));
+
+  return (
+    <div className="stats-view pt-4">
+      <div className="stats-kpi-grid">
+        <StatsKpi label="В работе" value={activeItems.length} detail={`${Math.round((activeItems.length / total) * 100)}% пайплайна`} color="#4FB3BF" icon={Activity} />
+        <StatsKpi label="Требуют внимания" value={todayItems.length} detail={`${overdueItems.length} просрочено`} color="#E8A33D" icon={AlertTriangle} />
+        <StatsKpi label="Офферы" value={offerItems.length} detail={`${acceptedOffers} принято`} color="#6FAE8A" icon={Briefcase} />
+        <StatsKpi label="Пауза / отвал" value={pausedItems.length + lostItems.length} detail={`${lostItems.length} отвалилось`} color="#C56B5D" icon={Clock} />
+      </div>
+
+      <div className="stats-layout">
+        <section className="stats-panel stats-panel-wide stats-panel-focus">
+          <StatsPanelHeader title="Воронка по этапам" meta={`${total} процессов`} />
+          <div className="stats-stage-list">
+            {stageRows.map((row) => (
+              <StatsSegmentedStageRow key={row.key} row={row} />
+            ))}
+          </div>
+        </section>
+
+        <section className="stats-panel stats-panel-wide stats-panel-diagnostic">
+          <StatsPanelHeader title="Где застревает пайплайн" meta="средние дни без активности" />
+          <div className="stats-bars">
+            {agingRows.map((row) => (
+              <StatsBarRow
+                key={row.key}
+                label={row.label}
+                count={row.avgDays}
+                max={agingMax}
+                color={row.color}
+                meta={row.count ? `${row.avgDays} дн. ср · ${row.maxDays} max` : 'нет активных'}
+                tone="quiet"
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className="stats-panel stats-panel-composition">
+          <StatsPanelHeader title="Состояния" meta={`${activeItems.length} активных`} />
+          <StatsCompositionChart rows={stateRows} total={total} />
+        </section>
+
+        <section className="stats-panel">
+          <StatsPanelHeader title="Требуют внимания" meta={staleItems.length} />
+          {staleItems.length === 0 ? (
+            <InlineEmpty text="Нет зависших или просроченных активных процессов." />
+          ) : (
+            <div className="stats-watchlist">
+              {staleItems.map(({ process, daysIdle, overdue }) => (
+                <button key={process.id} type="button" className="stats-watch-row" onClick={() => onOpen(process.id)}>
+                  <ProcessIdentity process={process} />
+                  <span className="font-mono text-xs" style={{ color: overdue ? '#C56B5D' : '#8B92A0' }}>
+                    {overdue ? 'просрочено' : `${daysIdle} дн.`}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="stats-panel stats-panel-composition">
+          <StatsPanelHeader title="Причины отвалов" meta={lostItems.length} />
+          {reasonRows.length === 0 ? (
+            <InlineEmpty text="Пока нет процессов в отвале." />
+          ) : (
+            <StatsCompositionChart rows={reasonRows} total={lostItems.length} />
+          )}
+        </section>
+
+        <section className="stats-panel stats-panel-composition">
+          <StatsPanelHeader title="Источники" meta={sourceRows.length} />
+          <StatsCompositionChart rows={sourceRows} total={total} />
+        </section>
+
+        <section className="stats-panel stats-panel-wide stats-panel-activity">
+          <StatsPanelHeader title="Активность за 14 дней" meta={`${events.length} событий`} />
+          <div className="stats-activity-bars" aria-label="Активность за последние 14 дней">
+            {recentActivity.map((item) => (
+              <div key={item.date} className="stats-activity-day" title={`${fmtDate(item.date)}: ${item.count}`}>
+                <span
+                  style={{
+                    height: item.count ? `${Math.max(8, (item.count / maxActivity) * 100)}%` : '0%',
+                    minHeight: item.count ? 8 : 0,
+                  }}
+                />
+                <small>{fmtDate(item.date).replace('.', '')}</small>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function StatsKpi({ label, value, detail, color, icon: Icon }) {
+  return (
+    <div className="stats-kpi" style={{ '--stats-color': color }}>
+      <div className="stats-kpi-top">
+        <span className="font-mono text-xs">{label}</span>
+        <Icon size={16} />
+      </div>
+      <div className="font-display stats-kpi-value">{value}</div>
+      <div className="font-mono stats-kpi-detail">{detail}</div>
+    </div>
+  );
+}
+
+function StatsPanelHeader({ title, meta }) {
+  return (
+    <div className="stats-panel-head">
+      <h2 className="font-display text-sm font-semibold">{title}</h2>
+      <span className="font-mono text-xs">{meta}</span>
+    </div>
+  );
+}
+
+function StatsSegmentedStageRow({ row }) {
+  const inactive = Math.max(0, row.count - row.active);
+  const hint = `${row.label}: всего ${row.count}, активных ${row.active}, неактивных ${inactive}`;
+  const segments = Array.from({ length: row.count });
+
+  return (
+    <div className="stats-stage-row" title={hint}>
+      <div className="stats-stage-row-head">
+        <span className="font-mono text-xs">{row.label}</span>
+        <span className="font-mono text-xs">
+          {row.active}/{row.count} активных
+        </span>
+      </div>
+      <div className="stats-segmented-track" role="img" aria-label={hint}>
+        {segments.length === 0 ? (
+          <span className="stats-segment-empty" />
+        ) : (
+          segments.map((_, index) => (
+            <span
+              key={index}
+              className={`stats-segment ${index < row.active ? 'is-active' : 'is-inactive'}`}
+              style={{ '--segment-color': row.color }}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatsCompositionChart({ rows, total }) {
+  const visibleRows = rows.filter((row) => row.count > 0);
+  const safeTotal = Math.max(1, total || visibleRows.reduce((sum, row) => sum + row.count, 0));
+
+  if (visibleRows.length === 0) {
+    return <InlineEmpty text="Нет данных для среза." />;
+  }
+
+  return (
+    <div className="stats-composition">
+      <div className="stats-composition-track" role="img" aria-label="Распределение процессов">
+        {visibleRows.map((row) => {
+          const width = Math.max(4, (row.count / safeTotal) * 100);
+          return (
+            <span
+              key={row.key}
+              title={`${row.label}: ${row.count}`}
+              style={{ width: `${width}%`, '--composition-color': row.color }}
+            />
+          );
+        })}
+      </div>
+      <div className="stats-composition-legend">
+        {visibleRows.map((row) => {
+          const percent = Math.round((row.count / safeTotal) * 100);
+          return (
+            <div key={row.key} className="stats-composition-item">
+              <span style={{ '--composition-color': row.color }} />
+              <strong className="font-mono text-xs">{row.label}</strong>
+              <em className="font-mono text-xs">
+                {row.count} · {percent}%
+              </em>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StatsBarRow({ label, count, max, color, meta, tone = 'default' }) {
+  const width = count && max ? Math.max(4, Math.round((count / max) * 100)) : 0;
+  return (
+    <div className={`stats-bar-row ${tone === 'quiet' ? 'is-quiet' : ''}`}>
+      <div className="stats-bar-label">
+        <span className="font-mono text-xs">{label}</span>
+        <span className="font-mono text-xs">{meta || count}</span>
+      </div>
+      <div className="stats-bar-track" aria-hidden="true">
+        <span style={{ width: `${width}%`, minWidth: count ? 4 : 0, background: color }} />
+      </div>
     </div>
   );
 }
@@ -1342,7 +1684,11 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
           {events.length === 0 ? (
             <InlineEmpty text="Пока нет событий." />
           ) : (
-            events.map((event) => <EventItem key={event.id} event={event} />)
+            <div className="event-timeline" aria-label="История событий">
+              {events.map((event) => (
+                <EventItem key={event.id} event={event} />
+              ))}
+            </div>
           )}
         </div>
       </aside>
@@ -1478,26 +1824,33 @@ function ProcessForm({ draft, setDraft, saving, onClose, onSave }) {
 function EventItem({ event }) {
   const Icon = EVENT_TYPES[event.type]?.icon || FileText;
   const state = WORK_STATES[event.workState];
+  const stage = HIRING_STAGES[event.hiringStage];
+  const accentColor = event.statusReason
+    ? STATUS_REASON_COLORS[event.statusReason] || STATUS_REASON_COLORS.other
+    : state?.color || stage?.color || '#4FB3BF';
+
   return (
-    <div className="mb-2 flex gap-3 p-3" style={{ background: '#1E222B', border: '1px solid #2B303B' }}>
-      <div className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center" style={{ background: '#23272F', color: '#4FB3BF', borderRadius: 4 }}>
+    <div className="event-timeline-item" style={{ '--event-color': accentColor }}>
+      <div className="event-timeline-rail" aria-hidden="true">
+        <span />
+      </div>
+      <div className="event-timeline-node" aria-hidden="true">
         <Icon size={15} />
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm">{EVENT_TYPES[event.type]?.label || event.type}</span>
-          {state && (
-            <span className="font-mono text-xs" style={{ color: state.color }}>
-              {state.label}
-            </span>
-          )}
+      <article className="event-timeline-card">
+        <div className="event-timeline-head">
+          <div className="min-w-0">
+            <h3 className="event-timeline-title font-mono text-sm">{EVENT_TYPES[event.type]?.label || event.type}</h3>
+            <div className="event-timeline-meta font-mono text-xs">
+              {fmtDateTime(event.occurredAt)} · {stage?.short || event.hiringStage}
+            </div>
+          </div>
+          {state && <span className="event-timeline-state font-mono text-xs">{state.label}</span>}
         </div>
-        <div className="mt-0.5 font-mono text-xs" style={{ color: '#8B92A0' }}>
-          {fmtDateTime(event.occurredAt)} · {HIRING_STAGES[event.hiringStage]?.short || event.hiringStage}
-        </div>
-        {event.note && <p className="mt-2 font-mono text-xs" style={{ color: '#C8CDD6' }}>{event.note}</p>}
-        {event.statusReason && <p className="mt-1 font-mono text-xs" style={{ color: '#C56B5D' }}>{STATUS_REASONS[event.statusReason]}</p>}
-      </div>
+
+        {event.note && <p className="event-timeline-note font-mono text-xs">{event.note}</p>}
+        {event.statusReason && <p className="event-timeline-reason font-mono text-xs">{STATUS_REASONS[event.statusReason]}</p>}
+      </article>
     </div>
   );
 }
