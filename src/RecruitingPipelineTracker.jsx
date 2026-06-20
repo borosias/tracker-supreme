@@ -1857,12 +1857,12 @@ function EventItem({ event }) {
 
 function InfoLine({ icon: Icon, label, value }) {
   return (
-    <div className="p-3" style={{ background: '#15181E', border: '1px solid #2B303B' }}>
+    <div className="info-line p-3" style={{ background: '#15181E', border: '1px solid #2B303B' }}>
       <div className="flex items-center gap-2 font-mono text-xs" style={{ color: '#8B92A0' }}>
         <Icon size={14} />
         {label}
       </div>
-      <div className="mt-1 truncate font-mono text-sm">{value}</div>
+      <div className="info-line-value mt-1 font-mono text-sm">{value}</div>
     </div>
   );
 }

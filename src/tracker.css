@@ -239,6 +239,18 @@ select option {
   min-width: 0;
 }
 
+.info-line {
+  min-width: 0;
+}
+
+.info-line-value {
+  color: #edeef0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .form-panel {
   max-height: calc(100svh - env(safe-area-inset-top));
 }
