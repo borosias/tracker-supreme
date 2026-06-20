@@ -4,15 +4,18 @@ import {
   Activity,
   BarChart3,
   Briefcase,
+  Building2,
   CalendarDays,
   Check,
   ChevronRight,
   Clock,
+  DollarSign,
   ExternalLink,
   FileText,
   Inbox,
   Link,
   Loader2,
+  MapPin,
   MessageCircle,
   Plus,
   RefreshCw,
@@ -1469,6 +1472,9 @@ function ProcessRow({ process, lastEvent, onOpen }) {
 }
 
 function ProcessCard({ process, lastEvent, onOpen }) {
+  const vacancyRole = getVacancyRole(process);
+  const hasVacancyMeta = vacancyRole || process.salary || process.location;
+
   return (
     <button
       onClick={() => onOpen(process.id)}
@@ -1479,6 +1485,28 @@ function ProcessCard({ process, lastEvent, onOpen }) {
         <ProcessIdentity process={process} />
         <StatePill state={process.workState} />
       </div>
+      {hasVacancyMeta && (
+        <div className="process-vacancy-meta font-mono text-xs">
+          {vacancyRole && (
+            <span className="process-vacancy-meta-item process-vacancy-role">
+              <Briefcase size={12} />
+              {vacancyRole}
+            </span>
+          )}
+          {process.salary && (
+            <span className="process-vacancy-meta-item process-vacancy-salary">
+              <DollarSign size={12} />
+              {process.salary}
+            </span>
+          )}
+          {process.location && (
+            <span className="process-vacancy-meta-item">
+              <MapPin size={12} />
+              {process.location}
+            </span>
+          )}
+        </div>
+      )}
       <div className="process-meta-row mt-3 flex items-center justify-between gap-3 font-mono text-xs" style={{ color: '#8B92A0' }}>
         <span className="process-card-note">{process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType] || 'Нет действия'}</span>
         <span className="process-date">{fmtDate(process.nextActionDate)}</span>
@@ -1500,11 +1528,25 @@ function ProcessIdentity({ process }) {
         <span style={{ width: 7, height: 7, background: stage.color, display: 'inline-block', flexShrink: 0 }} />
         <span className="truncate font-mono text-sm">{process.title || process.role || process.companyName || 'Без названия'}</span>
       </div>
-      <div className="mt-0.5 truncate pl-4 font-mono text-xs" style={{ color: '#8B92A0' }}>
-        {process.companyName || 'Компания не указана'} · {stage.short}
+      <div className="process-identity-context mt-0.5 pl-4 font-mono text-xs" style={{ color: '#8B92A0' }}>
+        <span>{process.companyName || 'Компания не указана'}</span>
+        <span aria-hidden="true">·</span>
+        <span>{stage.short}</span>
       </div>
+      {process.recruiterName && (
+        <div className="process-identity-recruiter mt-1 pl-4 font-mono text-xs">
+          <UserRound size={12} />
+          <span>{process.recruiterName}</span>
+        </div>
+      )}
     </div>
   );
+}
+
+function getVacancyRole(process) {
+  const role = textValue(process.role).trim();
+  const recruiterTitle = textValue(process.recruiterTitle).trim();
+  return role && role.toLocaleLowerCase() !== recruiterTitle.toLocaleLowerCase() ? role : '';
 }
 
 function StatePill({ state }) {
@@ -1519,6 +1561,7 @@ function StatePill({ state }) {
 function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSyncCalendar }) {
   const [eventDraft, setEventDraft] = useState({ type: 'note_added', note: '', reason: process.statusReason || '' });
   const set = (key, value) => setEventDraft((current) => ({ ...current, [key]: value }));
+  const vacancyRole = getVacancyRole(process);
 
   const quick = async (type) => {
     let savedProcess;
@@ -1611,13 +1654,31 @@ function ProcessDrawer({ process, events, saving, onClose, onEdit, onEvent, onSy
           </button>
         </div>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-2">
-          <InfoLine icon={UserRound} label="Рекрутер" value={process.recruiterName || '—'} />
-          <InfoLine icon={Briefcase} label="Роль" value={process.role || '—'} />
-          <InfoLine icon={Clock} label="Next action" value={`${fmtDate(process.nextActionDate)} · ${process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType]}`} />
+        <div className="drawer-info-grid mt-4 grid gap-2 sm:grid-cols-2">
+          <InfoLine icon={Briefcase} label="Вакансия / позиция" value={vacancyRole || 'Не указана'} wide />
+          <InfoLine icon={Building2} label="Компания / клиент" value={process.companyName || 'Не указана'} />
+          <InfoLine
+            icon={UserRound}
+            label="Рекрутер"
+            value={process.recruiterName || 'Не указан'}
+            secondary={process.recruiterTitle}
+          />
+          {process.salary && <InfoLine icon={DollarSign} label="Компенсация" value={process.salary} accent />}
+          {process.location && <InfoLine icon={MapPin} label="Локация" value={process.location} />}
+          <InfoLine icon={Clock} label="Следующее действие" value={`${fmtDate(process.nextActionDate)} · ${process.nextActionNote || NEXT_ACTION_TYPES[process.nextActionType]}`} wide />
           <InfoLine icon={AlertTriangle} label="Состояние" value={WORK_STATES[process.workState]?.label || process.workState} />
           <InfoLine icon={CalendarDays} label="Calendar" value={process.calendarEventId ? 'Синхронизирован' : 'Не синхронизирован'} />
         </div>
+
+        {process.sourceRawText && (
+          <section className="vacancy-details mt-4">
+            <div className="vacancy-details-head">
+              <FileText size={14} />
+              <span>Описание / исходный текст вакансии</span>
+            </div>
+            <div className="vacancy-details-text scroll-thin font-mono text-xs">{process.sourceRawText}</div>
+          </section>
+        )}
 
         {process.sourceUrl && (
           <a
@@ -1715,11 +1776,14 @@ function ProcessForm({ draft, setDraft, saving, onClose, onSave }) {
           <Field label="Компания / клиент">
             <input value={draft.companyName} onChange={(event) => set('companyName', event.target.value)} placeholder="Company name" className="w-full p-2 font-mono text-sm" style={inputStyle} />
           </Field>
-          <Field label="Роль">
+          <Field label="Вакансия / позиция">
             <input value={draft.role} onChange={(event) => set('role', event.target.value)} placeholder="Senior Frontend Developer" className="w-full p-2 font-mono text-sm" style={inputStyle} />
           </Field>
           <Field label="Рекрутер">
             <input value={draft.recruiterName} onChange={(event) => set('recruiterName', event.target.value)} placeholder="Name Surname" className="w-full p-2 font-mono text-sm" style={inputStyle} />
+          </Field>
+          <Field label="Должность рекрутера">
+            <input value={draft.recruiterTitle} onChange={(event) => set('recruiterTitle', event.target.value)} placeholder="Recruitment Specialist" className="w-full p-2 font-mono text-sm" style={inputStyle} />
           </Field>
           <Field label="LinkedIn рекрутера">
             <input value={draft.recruiterLinkedinUrl} onChange={(event) => set('recruiterLinkedinUrl', event.target.value)} placeholder="https://www.linkedin.com/in/..." className="w-full p-2 font-mono text-sm" style={inputStyle} />
@@ -1804,7 +1868,7 @@ function ProcessForm({ draft, setDraft, saving, onClose, onSave }) {
           </Field>
         </div>
 
-        <Field label="Raw source text">
+        <Field label="Описание / исходный текст вакансии">
           <textarea value={draft.sourceRawText} onChange={(event) => set('sourceRawText', event.target.value)} rows={3} className="w-full p-2 font-mono text-sm" style={inputStyle} />
         </Field>
 
@@ -1855,14 +1919,15 @@ function EventItem({ event }) {
   );
 }
 
-function InfoLine({ icon: Icon, label, value }) {
+function InfoLine({ icon: Icon, label, value, secondary = '', wide = false, accent = false }) {
   return (
-    <div className="info-line p-3" style={{ background: '#15181E', border: '1px solid #2B303B' }}>
+    <div className={`info-line p-3${wide ? ' info-line-wide' : ''}${accent ? ' info-line-accent' : ''}`} style={{ background: '#15181E', border: '1px solid #2B303B' }}>
       <div className="flex items-center gap-2 font-mono text-xs" style={{ color: '#8B92A0' }}>
         <Icon size={14} />
         {label}
       </div>
       <div className="info-line-value mt-1 font-mono text-sm">{value}</div>
+      {secondary && <div className="info-line-secondary mt-1 font-mono text-xs">{secondary}</div>}
     </div>
   );
 }
