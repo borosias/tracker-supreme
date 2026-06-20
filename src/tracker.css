@@ -197,6 +197,48 @@ select option {
   padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
 }
 
+.drawer-panel {
+  max-width: min(42rem, 100vw);
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.drawer-panel > *,
+.drawer-panel .grid,
+.drawer-panel .flex,
+.drawer-panel .min-w-0 {
+  min-width: 0;
+}
+
+.drawer-panel a,
+.drawer-panel p,
+.drawer-panel h2,
+.drawer-panel h3,
+.drawer-panel button,
+.drawer-panel input,
+.drawer-panel textarea,
+.drawer-panel select {
+  max-width: 100%;
+}
+
+.drawer-panel a,
+.drawer-panel p,
+.drawer-panel button {
+  overflow-wrap: anywhere;
+}
+
+.drawer-panel a svg,
+.drawer-panel button svg {
+  flex-shrink: 0;
+}
+
+.drawer-panel input,
+.drawer-panel textarea,
+.drawer-panel select {
+  min-width: 0;
+}
+
 .form-panel {
   max-height: calc(100svh - env(safe-area-inset-top));
 }
@@ -1061,8 +1103,24 @@ select option {
     justify-self: start;
   }
 
+  .drawer-backdrop {
+    overflow-x: hidden;
+  }
+
   .drawer-panel {
     border-left: 0 !important;
+    max-width: 100vw;
+    padding-left: 0.875rem !important;
+    padding-right: 0.875rem !important;
+    width: 100vw;
+  }
+
+  .drawer-panel .grid-cols-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drawer-panel .flex-wrap > button {
+    flex: 1 1 100%;
   }
 
   .form-backdrop {
