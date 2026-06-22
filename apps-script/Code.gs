@@ -341,6 +341,68 @@ function importSource_(payload) {
   };
 }
 
+function createDiagnostic_(requestId, sourceType, sourceUrl, startedAt) {
+  return {
+    requestId: requestId,
+    action: 'importSource',
+    sourceType: sourceType || 'other',
+    sourceUrl: sourceUrl || '',
+    startedAt: startedAt || new Date().toISOString(),
+    trace: [],
+  };
+}
+
+function addDiagnosticStage_(diagnostic, stage, status, reasonCode, message, durationMs, details) {
+  if (!diagnostic || !Array.isArray(diagnostic.trace)) return diagnostic;
+  diagnostic.trace.push({
+    sequence: diagnostic.trace.length + 1,
+    stage: stage,
+    status: status,
+    reasonCode: reasonCode,
+    message: message,
+    durationMs: Math.max(0, Number(durationMs) || 0),
+    details: sanitizeDiagnosticDetails_(details || {}),
+  });
+  return diagnostic;
+}
+
+function sanitizeDiagnosticDetails_(details) {
+  const blockedKey = /token|secret|authorization|cookie|html|raw|payload/i;
+  const source = details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+  const sanitized = {};
+  Object.keys(source).forEach(function (key) {
+    if (blockedKey.test(key)) return;
+    const value = source[key];
+    if (value === null || ['string', 'number', 'boolean'].indexOf(typeof value) >= 0) {
+      sanitized[key] = value;
+    } else if (Array.isArray(value)) {
+      sanitized[key] = value.filter(function (item) {
+        return item === null || ['string', 'number', 'boolean'].indexOf(typeof item) >= 0;
+      });
+    } else if (value && typeof value === 'object') {
+      const nested = {};
+      Object.keys(value).forEach(function (nestedKey) {
+        if (blockedKey.test(nestedKey)) return;
+        const nestedValue = value[nestedKey];
+        if (nestedValue === null || ['string', 'number', 'boolean'].indexOf(typeof nestedValue) >= 0) {
+          nested[nestedKey] = nestedValue;
+        }
+      });
+      sanitized[key] = nested;
+    }
+  });
+  return sanitized;
+}
+
+function classifyLinkedinPage_(html, metadata) {
+  if (metadata && (metadata.name || metadata.headline || metadata.companyName)) return 'profile';
+  const source = String(html || '').toLowerCase();
+  if (/checkpoint\/challenge|security verification|challenge-page|captcha/.test(source)) return 'checkpoint';
+  if (/authwall|sign in to linkedin|login-submit|uas\/login/.test(source)) return 'authwall';
+  if (/\bn\/a\b|not available/.test(source)) return 'placeholder';
+  return 'unknown';
+}
+
 function parseLinkedinPublicMetadata_(html, linkedinUrl) {
   const source = String(html || '');
   const scriptPattern = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;

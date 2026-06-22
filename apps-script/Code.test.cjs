@@ -342,3 +342,39 @@ test('falls back to the current free Actor when public metadata is blocked', () 
   assert.equal(result.processDraft.recruiterName, 'Ada Lovelace');
   assert.equal(result.processDraft.companyName, 'Analytical Engines');
 });
+
+test('classifies blocked LinkedIn pages', () => {
+  const { classifyLinkedinPage_ } = loadAppsScript();
+
+  assert.equal(classifyLinkedinPage_('<div class="authwall">Sign in to LinkedIn</div>', null), 'authwall');
+  assert.equal(
+    classifyLinkedinPage_('<form action="/checkpoint/challenge/">Security verification</form>', null),
+    'checkpoint',
+  );
+  assert.equal(classifyLinkedinPage_('<html><body>Public page without profile metadata</body></html>', null), 'unknown');
+  assert.equal(classifyLinkedinPage_('<html></html>', { name: 'Ada Lovelace' }), 'profile');
+});
+
+test('adds ordered diagnostic stages without sensitive details', () => {
+  const { createDiagnostic_, addDiagnosticStage_ } = loadAppsScript();
+  const diagnostic = createDiagnostic_(
+    'diag_1',
+    'linkedin',
+    'https://www.linkedin.com/in/example',
+    '2026-06-22T10:00:00.000Z',
+  );
+
+  addDiagnosticStage_(diagnostic, 'public_fetch', 'success', 'PUBLIC_HTTP_OK', 'Получен ответ', 120, {
+    httpStatus: 200,
+    contentType: 'text/html',
+    authorization: 'Bearer secret',
+    nested: { token: 'secret', hasJsonLdPerson: true },
+  });
+
+  assert.equal(diagnostic.trace[0].sequence, 1);
+  assert.equal(diagnostic.trace[0].stage, 'public_fetch');
+  assert.equal(diagnostic.trace[0].details.httpStatus, 200);
+  assert.equal('authorization' in diagnostic.trace[0].details, false);
+  assert.equal('token' in diagnostic.trace[0].details.nested, false);
+  assert.equal(diagnostic.trace[0].details.nested.hasJsonLdPerson, true);
+});
