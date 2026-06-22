@@ -210,6 +210,66 @@ test('normalizes the current free Actor output contract', () => {
   });
 });
 
+test('treats Actor placeholder values as missing metadata', () => {
+  const { normalizeLinkedinActorMetadata_ } = loadAppsScript();
+
+  const metadata = normalizeLinkedinActorMetadata_(
+    {
+      basic_info: {
+        fullname: 'N/A',
+        headline: 'N/A',
+        current_company: 'N/A',
+        location: { full: 'N/A' },
+      },
+    },
+    'https://www.linkedin.com/in/example',
+  );
+
+  assert.equal(metadata.name, '');
+  assert.equal(metadata.headline, '');
+  assert.equal(metadata.companyName, '');
+  assert.equal(metadata.location, '');
+});
+
+test('returns a manual draft when the Actor only returns placeholders', () => {
+  const UrlFetchApp = {
+    fetch(url) {
+      if (url.startsWith('https://www.linkedin.com/')) {
+        return {
+          getResponseCode: () => 999,
+          getContentText: () => '',
+        };
+      }
+      return {
+        getResponseCode: () => 200,
+        getContentText: () =>
+          JSON.stringify([
+            {
+              basic_info: {
+                fullname: 'N/A',
+                headline: 'N/A',
+                current_company: 'N/A',
+              },
+            },
+          ]),
+      };
+    },
+  };
+  const PropertiesService = {
+    getScriptProperties: () => ({
+      getProperty: (key) => (key === 'APIFY_TOKEN' ? 'test-token' : ''),
+    }),
+  };
+  const { enrichLinkedin_ } = loadAppsScript({ UrlFetchApp, PropertiesService });
+
+  const result = enrichLinkedin_('https://www.linkedin.com/in/example');
+
+  assert.equal(result.confidence, 'low');
+  assert.equal(result.processDraft.companyName, '');
+  assert.equal(result.processDraft.title, 'LinkedIn contact');
+  assert.match(result.warnings.join(' '), /usable profile data/i);
+});
+
 test('keeps legacy Actor output compatible with an APIFY_ACTOR_ID override', () => {
   const { normalizeLinkedinActorMetadata_ } = loadAppsScript();
 

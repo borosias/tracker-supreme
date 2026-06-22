@@ -362,20 +362,24 @@ function parseLinkedinPublicMetadata_(html, linkedinUrl) {
 
       const worksFor = Array.isArray(person.worksFor) ? person.worksFor[0] : person.worksFor;
       const address = person.address && typeof person.address === 'object' ? person.address : {};
-      const country = textValue_(address.addressCountry);
-      const location = [textValue_(address.addressLocality), textValue_(address.addressRegion), country]
+      const country = cleanLinkedinText_(address.addressCountry);
+      const location = [
+        cleanLinkedinText_(address.addressLocality),
+        cleanLinkedinText_(address.addressRegion),
+        country,
+      ]
         .filter(Boolean)
         .filter(function (value, index, values) {
           return values.indexOf(value) === index;
         })
         .join(', ');
       const result = {
-        name: textValue_(person.name),
-        headline: textValue_(person.jobTitle) || textValue_(person.disambiguatingDescription),
-        companyName: textValue_(worksFor),
+        name: cleanLinkedinText_(person.name),
+        headline: cleanLinkedinText_(person.jobTitle) || cleanLinkedinText_(person.disambiguatingDescription),
+        companyName: cleanLinkedinText_(worksFor),
         location: location,
-        description: textValue_(person.description),
-        profileUrl: textValue_(person.url) || textValue_(person.sameAs) || linkedinUrl || '',
+        description: cleanLinkedinText_(person.description),
+        profileUrl: cleanLinkedinText_(person.url) || cleanLinkedinText_(person.sameAs) || linkedinUrl || '',
       };
 
       if (result.name || result.headline || result.companyName) return result;
@@ -390,8 +394,9 @@ function parseLinkedinPublicMetadata_(html, linkedinUrl) {
   if (openGraphTitle) {
     const cleanTitle = openGraphTitle.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
     const separatorIndex = cleanTitle.indexOf(' - ');
-    const name = separatorIndex >= 0 ? cleanTitle.slice(0, separatorIndex).trim() : cleanTitle;
-    const headline = separatorIndex >= 0 ? cleanTitle.slice(separatorIndex + 3).trim() : '';
+    const name = cleanLinkedinText_(separatorIndex >= 0 ? cleanTitle.slice(0, separatorIndex) : cleanTitle);
+    const headline = cleanLinkedinText_(separatorIndex >= 0 ? cleanTitle.slice(separatorIndex + 3) : '');
+    if (!name && !headline) return null;
     return {
       name: name,
       headline: headline,
@@ -442,10 +447,10 @@ function decodeHtmlEntities_(value) {
 
 function linkedinMetadataToProcessDraft_(metadata) {
   const profile = metadata || {};
-  const companyName = textValue_(profile.companyName);
-  const recruiterName = textValue_(profile.name);
-  const recruiterTitle = textValue_(profile.headline);
-  const profileUrl = textValue_(profile.profileUrl);
+  const companyName = cleanLinkedinText_(profile.companyName);
+  const recruiterName = cleanLinkedinText_(profile.name);
+  const recruiterTitle = cleanLinkedinText_(profile.headline);
+  const profileUrl = cleanLinkedinText_(profile.profileUrl);
   return {
     title: companyName ? companyName + ' — recruiter contact' : recruiterName || 'LinkedIn contact',
     companyName: companyName,
@@ -455,7 +460,7 @@ function linkedinMetadataToProcessDraft_(metadata) {
     recruiterLinkedinUrl: profileUrl,
     sourceType: 'linkedin',
     sourceUrl: profileUrl,
-    location: textValue_(profile.location),
+    location: cleanLinkedinText_(profile.location),
     hiringStage: 'recruiter_talk',
     workState: 'action_required',
     nextActionType: 'follow_up',
@@ -481,36 +486,39 @@ function normalizeLinkedinActorMetadata_(item, linkedinUrl) {
   const profilePosition = firstItem_(positionGroup.profile_positions) || {};
   return {
     name:
-      textValue_(profile.fullname) ||
-      textValue_(profile.full_name) ||
-      textValue_(profile.fullName) ||
-      textValue_(profile.name) ||
-      [textValue_(profile.first_name || profile.firstName), textValue_(profile.last_name || profile.lastName)]
+      cleanLinkedinText_(profile.fullname) ||
+      cleanLinkedinText_(profile.full_name) ||
+      cleanLinkedinText_(profile.fullName) ||
+      cleanLinkedinText_(profile.name) ||
+      [
+        cleanLinkedinText_(profile.first_name || profile.firstName),
+        cleanLinkedinText_(profile.last_name || profile.lastName),
+      ]
         .filter(Boolean)
         .join(' '),
     headline:
-      textValue_(profile.headline) ||
-      textValue_(profile.jobTitle) ||
-      textValue_(profile.job_title) ||
-      textValue_(profile.title) ||
-      textValue_(currentPosition.title || currentPosition.position) ||
-      textValue_(profilePosition.title || profilePosition.position),
+      cleanLinkedinText_(profile.headline) ||
+      cleanLinkedinText_(profile.jobTitle) ||
+      cleanLinkedinText_(profile.job_title) ||
+      cleanLinkedinText_(profile.title) ||
+      cleanLinkedinText_(currentPosition.title || currentPosition.position) ||
+      cleanLinkedinText_(profilePosition.title || profilePosition.position),
     companyName:
-      textValue_(profile.current_company) ||
-      textValue_(profile.currentCompany) ||
-      textValue_(profile.current_company_name) ||
-      textValue_(company.name) ||
-      textValue_(profile.companyName) ||
-      textValue_(currentPosition.companyName) ||
-      textValue_(currentPosition.company && currentPosition.company.name) ||
-      textValue_(experience.companyName) ||
-      textValue_(positionGroup.company && positionGroup.company.name),
-    location: textValue_(location.full) || locationText_(profile.location),
-    description: textValue_(profile.about) || textValue_(profile.description),
+      cleanLinkedinText_(profile.current_company) ||
+      cleanLinkedinText_(profile.currentCompany) ||
+      cleanLinkedinText_(profile.current_company_name) ||
+      cleanLinkedinText_(company.name) ||
+      cleanLinkedinText_(profile.companyName) ||
+      cleanLinkedinText_(currentPosition.companyName) ||
+      cleanLinkedinText_(currentPosition.company && currentPosition.company.name) ||
+      cleanLinkedinText_(experience.companyName) ||
+      cleanLinkedinText_(positionGroup.company && positionGroup.company.name),
+    location: cleanLinkedinText_(location.full) || cleanLinkedinText_(locationText_(profile.location)),
+    description: cleanLinkedinText_(profile.about) || cleanLinkedinText_(profile.description),
     profileUrl:
-      textValue_(profile.profile_url) ||
-      textValue_(profile.linkedinUrl) ||
-      textValue_(profile.url) ||
+      cleanLinkedinText_(profile.profile_url) ||
+      cleanLinkedinText_(profile.linkedinUrl) ||
+      cleanLinkedinText_(profile.url) ||
       linkedinUrl ||
       '',
   };
@@ -626,6 +634,13 @@ function enrichLinkedin_(linkedinUrl) {
     }
 
     const metadata = normalizeLinkedinActorMetadata_(item, linkedinUrl);
+    if (!metadata.name && !metadata.headline && !metadata.companyName) {
+      return {
+        confidence: 'low',
+        warnings: publicResult.warnings.concat(['LinkedIn enrichment provider returned no usable profile data']),
+        processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+      };
+    }
     return {
       confidence: 'high',
       warnings: [],
@@ -668,6 +683,13 @@ function textValue_(value) {
     );
   }
   return '';
+}
+
+function cleanLinkedinText_(value) {
+  const text = textValue_(value).trim();
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ');
+  if (/^(?:n\/a|n\.a\.|not available|unavailable|null|undefined|unknown|-+)$/.test(normalized)) return '';
+  return text;
 }
 
 function locationText_(location) {
@@ -749,7 +771,10 @@ function extractSalary_(lines) {
 }
 
 function parseGenericSource_(sourceType, url, rawText) {
-  const title = firstLine_(rawText) || titleFromUrl_(url) || 'New recruiting process';
+  const title =
+    firstLine_(rawText) ||
+    (sourceType === 'linkedin' ? 'LinkedIn contact' : titleFromUrl_(url)) ||
+    'New recruiting process';
   return {
     title: title,
     companyName: '',
