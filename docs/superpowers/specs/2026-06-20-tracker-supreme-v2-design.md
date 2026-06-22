@@ -168,10 +168,13 @@ Every tenant-owned table includes `workspace_id`. A personal workspace uses the 
 - `contacts`
 - `process_contacts`
 - `process_events`
+- `process_blockers`
 - `next_actions`
 - `source_records`
 
 `process_events` is append-oriented and records meaningful business history. Current state remains on `hiring_processes` for efficient UI reads. `next_actions` is separate from the process so later versions can support multiple reminders, assignments, and calendar links without changing the process record.
+
+Temporary blockers are orthogonal to hiring stage, work state, pause, and terminal outcome. `process_blockers` records reason, note, review date, creator, creation time, resolution time, resolver, and resolution note. A partial unique index allows at most one active blocker per hiring process. Resolving a blocker creates a process event and schedules the next useful action without deleting blocker history.
 
 ### 7.3 Integrations and parsers
 
@@ -231,6 +234,7 @@ Required indexes begin with `workspace_id` and then match actual access patterns
 
 - `(workspace_id, hiring_stage, updated_at)`;
 - `(workspace_id, work_state, next_action_date)`;
+- `(workspace_id, blocker_review_date)` for active blocked processes;
 - `(workspace_id, process_id, occurred_at)`;
 - `(workspace_id, status, created_at)` for parser jobs;
 - `(workspace_id, period_start, capability)` for usage accounting.
