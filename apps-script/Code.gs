@@ -62,7 +62,7 @@ const SHEETS = {
 
 const HIRING_STAGE_DEFAULT = 'application';
 const WORK_STATE_DEFAULT = 'active';
-const APIFY_ACTOR_ID = 'harvestapi~linkedin-profile-scraper';
+const DEFAULT_APIFY_ACTOR_ID = 'scrapers-hub~linkedin-profile-details-scraper-email-no-cookies-required';
 
 function doGet() {
   ensureSchema_();
@@ -341,6 +341,234 @@ function importSource_(payload) {
   };
 }
 
+function parseLinkedinPublicMetadata_(html, linkedinUrl) {
+  const source = String(html || '');
+  const scriptPattern = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+
+  while ((match = scriptPattern.exec(source))) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      const candidates = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed && parsed['@graph'])
+          ? parsed['@graph']
+          : [parsed];
+      const person = candidates.find(function (item) {
+        const types = Array.isArray(item && item['@type']) ? item['@type'] : [item && item['@type']];
+        return types.indexOf('Person') >= 0;
+      });
+      if (!person) continue;
+
+      const worksFor = Array.isArray(person.worksFor) ? person.worksFor[0] : person.worksFor;
+      const address = person.address && typeof person.address === 'object' ? person.address : {};
+      const country = textValue_(address.addressCountry);
+      const location = [textValue_(address.addressLocality), textValue_(address.addressRegion), country]
+        .filter(Boolean)
+        .filter(function (value, index, values) {
+          return values.indexOf(value) === index;
+        })
+        .join(', ');
+      const result = {
+        name: textValue_(person.name),
+        headline: textValue_(person.jobTitle) || textValue_(person.disambiguatingDescription),
+        companyName: textValue_(worksFor),
+        location: location,
+        description: textValue_(person.description),
+        profileUrl: textValue_(person.url) || textValue_(person.sameAs) || linkedinUrl || '',
+      };
+
+      if (result.name || result.headline || result.companyName) return result;
+    } catch (error) {
+      // Ignore unrelated or malformed JSON-LD blocks and continue looking for a Person.
+    }
+  }
+
+  const openGraphTitle = extractMetaContent_(source, 'og:title');
+  const openGraphDescription = extractMetaContent_(source, 'og:description');
+  const openGraphUrl = extractMetaContent_(source, 'og:url');
+  if (openGraphTitle) {
+    const cleanTitle = openGraphTitle.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+    const separatorIndex = cleanTitle.indexOf(' - ');
+    const name = separatorIndex >= 0 ? cleanTitle.slice(0, separatorIndex).trim() : cleanTitle;
+    const headline = separatorIndex >= 0 ? cleanTitle.slice(separatorIndex + 3).trim() : '';
+    return {
+      name: name,
+      headline: headline,
+      companyName: '',
+      location: '',
+      description: openGraphDescription,
+      profileUrl: openGraphUrl || linkedinUrl || '',
+    };
+  }
+
+  return null;
+}
+
+function extractMetaContent_(html, key) {
+  const metaPattern = /<meta\b[^>]*>/gi;
+  const source = String(html || '');
+  let match;
+  while ((match = metaPattern.exec(source))) {
+    const tag = match[0];
+    const keyMatch = tag.match(/(?:property|name)\s*=\s*["']([^"']+)["']/i);
+    if (!keyMatch || keyMatch[1].toLowerCase() !== String(key || '').toLowerCase()) continue;
+    const contentMatch = tag.match(/content\s*=\s*["']([^"']*)["']/i);
+    return contentMatch ? decodeHtmlEntities_(contentMatch[1]).trim() : '';
+  }
+  return '';
+}
+
+function decodeHtmlEntities_(value) {
+  let decoded = String(value || '');
+  for (let pass = 0; pass < 3; pass += 1) {
+    const previous = decoded;
+    decoded = decoded
+      .replace(/&#(\d+);/g, function (_, code) {
+        return String.fromCharCode(Number(code));
+      })
+      .replace(/&#x([0-9a-f]+);/gi, function (_, code) {
+        return String.fromCharCode(parseInt(code, 16));
+      })
+      .replace(/&quot;/gi, '"')
+      .replace(/&apos;|&#39;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&');
+    if (decoded === previous) break;
+  }
+  return decoded;
+}
+
+function linkedinMetadataToProcessDraft_(metadata) {
+  const profile = metadata || {};
+  const companyName = textValue_(profile.companyName);
+  const recruiterName = textValue_(profile.name);
+  const recruiterTitle = textValue_(profile.headline);
+  const profileUrl = textValue_(profile.profileUrl);
+  return {
+    title: companyName ? companyName + ' — recruiter contact' : recruiterName || 'LinkedIn contact',
+    companyName: companyName,
+    role: recruiterTitle,
+    recruiterName: recruiterName,
+    recruiterTitle: recruiterTitle,
+    recruiterLinkedinUrl: profileUrl,
+    sourceType: 'linkedin',
+    sourceUrl: profileUrl,
+    location: textValue_(profile.location),
+    hiringStage: 'recruiter_talk',
+    workState: 'action_required',
+    nextActionType: 'follow_up',
+    nextActionNote: 'Проверить профиль и зафиксировать следующий шаг',
+  };
+}
+
+function buildLinkedinActorInput_(linkedinUrl) {
+  return {
+    profileUrls: [{ url: linkedinUrl }],
+    includeEmail: false,
+  };
+}
+
+function normalizeLinkedinActorMetadata_(item, linkedinUrl) {
+  const source = item || {};
+  const profile = source.basic_info || source.element || source.profile || source;
+  const company = objectOrEmpty_(profile.company);
+  const location = objectOrEmpty_(profile.location);
+  const currentPosition = firstItem_(profile.currentPosition) || firstItem_(profile.current_position) || {};
+  const experience = firstItem_(profile.experience) || {};
+  const positionGroup = firstItem_(profile.position_groups) || {};
+  const profilePosition = firstItem_(positionGroup.profile_positions) || {};
+  return {
+    name:
+      textValue_(profile.fullname) ||
+      textValue_(profile.full_name) ||
+      textValue_(profile.fullName) ||
+      textValue_(profile.name) ||
+      [textValue_(profile.first_name || profile.firstName), textValue_(profile.last_name || profile.lastName)]
+        .filter(Boolean)
+        .join(' '),
+    headline:
+      textValue_(profile.headline) ||
+      textValue_(profile.jobTitle) ||
+      textValue_(profile.job_title) ||
+      textValue_(profile.title) ||
+      textValue_(currentPosition.title || currentPosition.position) ||
+      textValue_(profilePosition.title || profilePosition.position),
+    companyName:
+      textValue_(profile.current_company) ||
+      textValue_(profile.currentCompany) ||
+      textValue_(profile.current_company_name) ||
+      textValue_(company.name) ||
+      textValue_(profile.companyName) ||
+      textValue_(currentPosition.companyName) ||
+      textValue_(currentPosition.company && currentPosition.company.name) ||
+      textValue_(experience.companyName) ||
+      textValue_(positionGroup.company && positionGroup.company.name),
+    location: textValue_(location.full) || locationText_(profile.location),
+    description: textValue_(profile.about) || textValue_(profile.description),
+    profileUrl:
+      textValue_(profile.profile_url) ||
+      textValue_(profile.linkedinUrl) ||
+      textValue_(profile.url) ||
+      linkedinUrl ||
+      '',
+  };
+}
+
+function enrichLinkedinFromPublicPage_(linkedinUrl) {
+  if (!/^https?:\/\/([a-z0-9-]+\.)?linkedin\.com\/in\//i.test(String(linkedinUrl || ''))) {
+    return {
+      confidence: 'low',
+      warnings: ['LinkedIn URL must point to a public linkedin.com/in profile'],
+      processDraft: null,
+    };
+  }
+
+  try {
+    const response = UrlFetchApp.fetch(linkedinUrl, {
+      method: 'get',
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36',
+      },
+    });
+    const code = response.getResponseCode();
+    if (code < 200 || code >= 300) {
+      return {
+        confidence: 'low',
+        warnings: ['LinkedIn public page returned HTTP ' + code],
+        processDraft: null,
+      };
+    }
+
+    const metadata = parseLinkedinPublicMetadata_(response.getContentText(), linkedinUrl);
+    if (!metadata) {
+      return {
+        confidence: 'low',
+        warnings: ['LinkedIn public metadata is unavailable for this profile'],
+        processDraft: null,
+      };
+    }
+
+    return {
+      confidence: 'medium',
+      warnings: [],
+      processDraft: linkedinMetadataToProcessDraft_(metadata),
+    };
+  } catch (error) {
+    return {
+      confidence: 'low',
+      warnings: ['LinkedIn public page fetch failed: ' + error.message],
+      processDraft: null,
+    };
+  }
+}
+
 function enrichLinkedin_(linkedinUrl) {
   if (!linkedinUrl) {
     return {
@@ -350,11 +578,16 @@ function enrichLinkedin_(linkedinUrl) {
     };
   }
 
-  const token = PropertiesService.getScriptProperties().getProperty('APIFY_TOKEN');
+  const publicResult = enrichLinkedinFromPublicPage_(linkedinUrl);
+  if (publicResult.processDraft) return publicResult;
+
+  const properties = PropertiesService.getScriptProperties();
+  const token = properties.getProperty('APIFY_TOKEN');
+  const actorId = properties.getProperty('APIFY_ACTOR_ID') || DEFAULT_APIFY_ACTOR_ID;
   if (!token) {
     return {
       confidence: 'low',
-      warnings: ['APIFY_TOKEN is not set in Script Properties'],
+      warnings: publicResult.warnings.concat(['APIFY_TOKEN is not set in Script Properties']),
       processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
     };
   }
@@ -362,7 +595,7 @@ function enrichLinkedin_(linkedinUrl) {
   try {
     const endpoint =
       'https://api.apify.com/v2/acts/' +
-      encodeURIComponent(APIFY_ACTOR_ID) +
+      encodeURIComponent(actorId) +
       '/run-sync-get-dataset-items?clean=true&maxItems=1';
     const response = UrlFetchApp.fetch(endpoint, {
       method: 'post',
@@ -371,16 +604,13 @@ function enrichLinkedin_(linkedinUrl) {
         Authorization: 'Bearer ' + token,
         'Content-Type': 'application/json',
       },
-      payload: JSON.stringify({
-        urls: [linkedinUrl],
-        profileScraperMode: 'Profile details no email ($4 per 1k)',
-      }),
+      payload: JSON.stringify(buildLinkedinActorInput_(linkedinUrl)),
     });
     const code = response.getResponseCode();
     if (code < 200 || code >= 300) {
       return {
         confidence: 'low',
-        warnings: ['Apify returned HTTP ' + code],
+        warnings: publicResult.warnings.concat(['Apify returned HTTP ' + code]),
         processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
       };
     }
@@ -390,73 +620,32 @@ function enrichLinkedin_(linkedinUrl) {
     if (!item || item.status === 'not_found') {
       return {
         confidence: 'low',
-        warnings: ['LinkedIn profile was not found by enrichment provider'],
+        warnings: publicResult.warnings.concat(['LinkedIn profile was not found by enrichment provider']),
         processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
       };
     }
 
-    const profile = item.profile || item;
-    const currentPosition = firstItem_(profile.currentPosition) || firstItem_(profile.current_position);
-    const experience = firstItem_(profile.experience) || {};
-    const positionGroup = firstItem_(profile.position_groups) || {};
-    const profilePosition = firstItem_(positionGroup.profile_positions) || {};
-    const company = objectOrEmpty_(profile.company);
-    const companyName =
-      textValue_(company.name) ||
-      textValue_(profile.company) ||
-      textValue_(profile.current_company) ||
-      textValue_(currentPosition.companyName) ||
-      textValue_(currentPosition.company && currentPosition.company.name) ||
-      textValue_(experience.companyName) ||
-      textValue_(positionGroup.company && positionGroup.company.name) ||
-      '';
-    const fullName =
-      textValue_(profile.full_name) ||
-      textValue_(profile.fullName) ||
-      textValue_(profile.name) ||
-      [textValue_(profile.first_name || profile.firstName), textValue_(profile.last_name || profile.lastName)]
-        .filter(Boolean)
-        .join(' ');
-    const title =
-      textValue_(profile.title) ||
-      textValue_(profile.headline) ||
-      textValue_(profile.job_title) ||
-      textValue_(currentPosition.title || currentPosition.position) ||
-      textValue_(profilePosition.title || profilePosition.position) ||
-      '';
+    const metadata = normalizeLinkedinActorMetadata_(item, linkedinUrl);
     return {
       confidence: 'high',
       warnings: [],
-      processDraft: {
-        title: companyName ? companyName + ' — recruiter contact' : fullName || 'LinkedIn contact',
-        companyName: companyName,
-        role: title,
-        recruiterName: fullName,
-        recruiterTitle: title,
-        recruiterLinkedinUrl: linkedinUrl,
-        sourceType: 'linkedin',
-        sourceUrl: linkedinUrl,
-        location: locationText_(profile.location),
-        hiringStage: 'recruiter_talk',
-        workState: 'action_required',
-        nextActionNote: 'Проверить профиль и зафиксировать следующий шаг',
-      },
+      processDraft: linkedinMetadataToProcessDraft_(metadata),
     };
   } catch (error) {
     return {
       confidence: 'low',
-      warnings: ['LinkedIn enrichment failed: ' + error.message],
+      warnings: publicResult.warnings.concat(['LinkedIn enrichment failed: ' + error.message]),
       processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
     };
   }
 }
 
-function firstItem_(value) {
-  return Array.isArray(value) && value.length ? value[0] : null;
-}
-
 function objectOrEmpty_(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstItem_(value) {
+  return Array.isArray(value) && value.length ? value[0] : null;
 }
 
 function textValue_(value) {

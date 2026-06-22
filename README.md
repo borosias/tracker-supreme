@@ -58,11 +58,14 @@ Setup details are in `docs/setup.md`. In short:
 2. Open `Extensions -> Apps Script`.
 3. Paste `apps-script/Code.gs`.
 4. Add Script Properties:
-   - `APIFY_TOKEN`
+   - `APIFY_TOKEN` optional: used only when direct LinkedIn metadata is unavailable
+   - `APIFY_ACTOR_ID` optional: overrides the default free fallback Actor
    - `SHARED_SECRET` optional, recommended
    - `SPREADSHEET_ID` optional for standalone script
 5. Deploy as a Web App.
 6. Paste the Web App URL into the tracker `API` tab.
+
+LinkedIn enrichment first reads public JSON-LD/OpenGraph metadata directly, so normal low-volume use does not consume Apify runs. If LinkedIn blocks the public response, the backend can fall back to the currently configured free Actor and then to a manual draft.
 
 ## Data Model
 
