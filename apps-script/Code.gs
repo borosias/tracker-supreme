@@ -17,6 +17,10 @@ const SHEETS = {
       'workState',
       'statusReason',
       'statusNote',
+      'blockerReason',
+      'blockerNote',
+      'blockedAt',
+      'blockerReviewDate',
       'nextActionType',
       'nextActionDate',
       'nextActionTime',
@@ -41,6 +45,7 @@ const SHEETS = {
       'hiringStage',
       'workState',
       'statusReason',
+      'blockerReason',
       'sourceType',
       'sourceUrl',
       'calendarEventId',
@@ -58,18 +63,48 @@ const SHEETS = {
     name: 'Settings',
     headers: ['key', 'value'],
   },
+  diagnostics: {
+    name: 'Diagnostics',
+    headers: [
+      'requestId',
+      'action',
+      'sourceType',
+      'sourceUrl',
+      'outcome',
+      'provider',
+      'failedStage',
+      'reasonCode',
+      'message',
+      'confidence',
+      'durationMs',
+      'startedAt',
+      'completedAt',
+      'traceJson',
+    ],
+  },
 };
 
 const HIRING_STAGE_DEFAULT = 'application';
 const WORK_STATE_DEFAULT = 'active';
+const DEFAULT_TARGET_ROLE = 'Senior Frontend Developer';
 const DEFAULT_APIFY_ACTOR_ID = 'scrapers-hub~linkedin-profile-details-scraper-email-no-cookies-required';
+const DIAGNOSTIC_MAX_ROWS = 500;
 
 function doGet() {
   ensureSchema_();
   return json_({
     ok: true,
     service: 'Recruiting Pipeline Apps Script API',
-    actions: ['listProcesses', 'upsertProcess', 'appendEvent', 'importSource', 'syncCalendar'],
+    actions: [
+      'listProcesses',
+      'upsertProcess',
+      'appendEvent',
+      'importSource',
+      'syncCalendar',
+      'listDiagnostics',
+      'getDiagnostic',
+      'clearDiagnostics',
+    ],
   });
 }
 
@@ -99,6 +134,13 @@ function doPost(e) {
         return json_(importSource_(payload));
       case 'syncCalendar':
         return json_(syncCalendar_(payload.processId, payload.process));
+      case 'listDiagnostics':
+        return json_({ ok: true, diagnostics: listDiagnostics_(payload.limit) });
+      case 'getDiagnostic':
+        return json_({ ok: true, diagnostic: getDiagnostic_(payload.requestId) });
+      case 'clearDiagnostics':
+        clearDiagnostics_();
+        return json_({ ok: true });
       default:
         throw new Error('Unknown action: ' + payload.action);
     }
@@ -137,15 +179,26 @@ function ensureSchema_() {
     if (!sheet) {
       sheet = ss.insertSheet(def.name);
     }
-    const existing = sheet.getRange(1, 1, 1, Math.max(def.headers.length, sheet.getLastColumn() || 1)).getValues()[0];
-    const same = def.headers.every(function (header, index) {
-      return existing[index] === header;
+    const existing = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn() || 1)).getValues()[0];
+    const merged = mergeHeaders_(existing, def.headers);
+    const current = existing.filter(function (header) {
+      return Boolean(header);
     });
-    if (!same) {
-      sheet.getRange(1, 1, 1, def.headers.length).setValues([def.headers]);
-      sheet.setFrozenRows(1);
+    if (merged.length !== current.length) {
+      sheet.getRange(1, 1, 1, merged.length).setValues([merged]);
     }
+    sheet.setFrozenRows(1);
   });
+}
+
+function mergeHeaders_(existing, required) {
+  const merged = (existing || []).filter(function (header) {
+    return Boolean(header);
+  });
+  (required || []).forEach(function (header) {
+    if (merged.indexOf(header) < 0) merged.push(header);
+  });
+  return merged;
 }
 
 function readObjects_(sheetName) {
@@ -162,8 +215,95 @@ function readObjects_(sheetName) {
       return item;
     })
     .filter(function (item) {
-      return item.id || item.key;
+      return item.id || item.key || item.requestId;
     });
+}
+
+function diagnosticToRow_(diagnostic) {
+  const source = diagnostic || {};
+  return {
+    requestId: source.requestId || '',
+    action: source.action || 'importSource',
+    sourceType: source.sourceType || '',
+    sourceUrl: source.sourceUrl || '',
+    outcome: source.outcome || '',
+    provider: source.provider || '',
+    failedStage: source.failedStage || '',
+    reasonCode: source.reasonCode || '',
+    message: source.message || '',
+    confidence: source.confidence || 'low',
+    durationMs: Math.max(0, Number(source.durationMs) || 0),
+    startedAt: source.startedAt || '',
+    completedAt: source.completedAt || '',
+    traceJson: JSON.stringify(Array.isArray(source.trace) ? source.trace : []),
+  };
+}
+
+function diagnosticFromRow_(row) {
+  const source = row || {};
+  let trace = [];
+  let traceCorrupted = false;
+  try {
+    const parsed = JSON.parse(String(source.traceJson || '[]'));
+    trace = Array.isArray(parsed) ? parsed : [];
+    traceCorrupted = !Array.isArray(parsed);
+  } catch (error) {
+    traceCorrupted = true;
+  }
+  return {
+    requestId: source.requestId || '',
+    action: source.action || 'importSource',
+    sourceType: source.sourceType || '',
+    sourceUrl: source.sourceUrl || '',
+    outcome: source.outcome || '',
+    provider: source.provider || '',
+    failedStage: source.failedStage || '',
+    reasonCode: source.reasonCode || '',
+    message: source.message || '',
+    confidence: source.confidence || 'low',
+    durationMs: Math.max(0, Number(source.durationMs) || 0),
+    startedAt: source.startedAt || '',
+    completedAt: source.completedAt || '',
+    trace: trace,
+    traceCorrupted: traceCorrupted,
+  };
+}
+
+function persistDiagnostic_(diagnostic) {
+  const row = diagnosticToRow_(diagnostic);
+  writeObject_(SHEETS.diagnostics.name, row, 'requestId');
+  try {
+    const sheet = getSpreadsheet_().getSheetByName(SHEETS.diagnostics.name);
+    const excess = Math.max(0, sheet.getLastRow() - 1 - DIAGNOSTIC_MAX_ROWS);
+    if (excess > 0) sheet.deleteRows(2, excess);
+  } catch (error) {
+    console.warn({ message: 'diagnostic_retention_failed', error: String(error && error.message ? error.message : error) });
+  }
+  return diagnosticFromRow_(row);
+}
+
+function listDiagnostics_(limit) {
+  const normalizedLimit = Math.min(100, Math.max(1, Number(limit) || 30));
+  return readObjects_(SHEETS.diagnostics.name)
+    .map(diagnosticFromRow_)
+    .sort(function (a, b) {
+      return String(b.completedAt || b.startedAt).localeCompare(String(a.completedAt || a.startedAt));
+    })
+    .slice(0, normalizedLimit);
+}
+
+function getDiagnostic_(requestId) {
+  if (!requestId) return null;
+  const row = readObjects_(SHEETS.diagnostics.name).find(function (item) {
+    return item.requestId === requestId;
+  });
+  return row ? diagnosticFromRow_(row) : null;
+}
+
+function clearDiagnostics_() {
+  const sheet = getSpreadsheet_().getSheetByName(SHEETS.diagnostics.name);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  sheet.deleteRows(2, sheet.getLastRow() - 1);
 }
 
 function writeObject_(sheetName, object, keyField) {
@@ -195,9 +335,9 @@ function upsertProcess_(process) {
     id: process.id || makeId_('proc'),
     title: process.title || '',
     companyName: process.companyName || '',
-    role: process.role || '',
+    role: cleanLinkedinText_(process.role) || DEFAULT_TARGET_ROLE,
     recruiterName: process.recruiterName || '',
-    recruiterTitle: process.recruiterTitle || '',
+    recruiterTitle: cleanLinkedinText_(process.recruiterTitle),
     recruiterLinkedinUrl: process.recruiterLinkedinUrl || '',
     recruiterEmail: process.recruiterEmail || '',
     sourceType: process.sourceType || 'manual',
@@ -207,6 +347,10 @@ function upsertProcess_(process) {
     workState: process.workState || WORK_STATE_DEFAULT,
     statusReason: process.statusReason || '',
     statusNote: process.statusNote || '',
+    blockerReason: process.blockerReason || '',
+    blockerNote: process.blockerNote || '',
+    blockedAt: process.blockedAt || '',
+    blockerReviewDate: normalizeDateOnly_(process.blockerReviewDate),
     nextActionType: process.nextActionType || 'follow_up',
     nextActionDate: normalizeDateOnly_(process.nextActionDate) || dateOnly_(now),
     nextActionTime: process.nextActionTime || '',
@@ -265,6 +409,7 @@ function appendEvent_(processId, event) {
     hiringStage: event.hiringStage || HIRING_STAGE_DEFAULT,
     workState: event.workState || WORK_STATE_DEFAULT,
     statusReason: event.statusReason || '',
+    blockerReason: event.blockerReason || '',
     sourceType: event.sourceType || '',
     sourceUrl: event.sourceUrl || '',
     calendarEventId: event.calendarEventId || '',
@@ -290,20 +435,62 @@ function importSource_(payload) {
   const sourceType = payload.sourceType || detectSourceType_(payload.url || payload.rawText || '');
   const url = payload.url || '';
   const rawText = payload.rawText || '';
+  const startedAt = new Date().toISOString();
+  const diagnostic = createDiagnostic_(makeId_('diag'), sourceType, url, startedAt);
   const warnings = [];
   let processDraft;
   let confidence = 'low';
+  let provider = 'parser';
+  let reasonCode = 'IMPORT_PARSED';
+  let message = 'Источник обработан';
+
+  const validLinkedinUrl = sourceType !== 'linkedin' || isLinkedinProfileUrl_(url);
+  addDiagnosticStage_(
+    diagnostic,
+    'validate_input',
+    validLinkedinUrl ? 'success' : 'failed',
+    validLinkedinUrl ? 'INPUT_VALID' : 'INVALID_LINKEDIN_URL',
+    validLinkedinUrl ? 'Входные данные приняты' : 'Нужна публичная ссылка linkedin.com/in',
+    0,
+    { hasUrl: Boolean(url), hasRawText: Boolean(rawText) },
+  );
 
   if (sourceType === 'linkedin') {
-    const result = enrichLinkedin_(url);
+    const result = validLinkedinUrl
+      ? enrichLinkedin_(url, diagnostic)
+      : {
+          confidence: 'low',
+          warnings: ['LinkedIn URL must point to a public linkedin.com/in profile'],
+          processDraft: parseGenericSource_('linkedin', url, ''),
+          provider: 'manual',
+          reasonCode: 'INVALID_LINKEDIN_URL',
+          message: 'Открыт ручной черновик: ссылка LinkedIn не прошла проверку',
+        };
     warnings.push.apply(warnings, result.warnings);
     processDraft = result.processDraft;
     confidence = result.confidence;
+    provider = result.provider || 'manual';
+    reasonCode = result.reasonCode || (result.processDraft ? 'SUCCESS_PUBLIC' : 'MANUAL_FALLBACK');
+    message = result.message || 'LinkedIn импорт обработан';
   } else if (sourceType === 'djinni') {
+    const parseStartedAt = Date.now();
     processDraft = parseDjinni_(url, rawText);
     confidence = rawText ? 'medium' : 'low';
+    provider = 'parser';
+    reasonCode = 'SUCCESS_DJINNI';
+    message = 'Djinni обработан локальным парсером';
+    addDiagnosticStage_(diagnostic, 'parse_source', 'success', reasonCode, message, Date.now() - parseStartedAt, {
+      hasRawText: Boolean(rawText),
+    });
   } else {
+    const parseStartedAt = Date.now();
     processDraft = parseGenericSource_(sourceType, url, rawText);
+    provider = 'manual';
+    reasonCode = 'MANUAL_DRAFT';
+    message = 'Создан ручной черновик источника';
+    addDiagnosticStage_(diagnostic, 'parse_source', 'fallback', reasonCode, message, Date.now() - parseStartedAt, {
+      hasRawText: Boolean(rawText),
+    });
   }
 
   processDraft.id = processDraft.id || makeId_('proc');
@@ -332,13 +519,131 @@ function importSource_(payload) {
     calendarEventId: '',
   };
 
+  finalizeDiagnostic_(diagnostic, {
+    outcome: provider === 'manual' ? 'fallback' : 'success',
+    provider: provider,
+    reasonCode: reasonCode,
+    message: message,
+    confidence: confidence,
+  });
+  try {
+    persistDiagnostic_(diagnostic);
+  } catch (error) {
+    console.warn({
+      message: 'diagnostic_persistence_failed',
+      requestId: diagnostic.requestId,
+      error: String(error && error.message ? error.message : error),
+    });
+  }
+  console.log({
+    message: 'import_diagnostic',
+    requestId: diagnostic.requestId,
+    outcome: diagnostic.outcome,
+    provider: diagnostic.provider,
+    reasonCode: diagnostic.reasonCode,
+    durationMs: diagnostic.durationMs,
+    trace: diagnostic.trace,
+  });
+
   return {
     ok: true,
     processDraft: processDraft,
     eventDraft: eventDraft,
     confidence: confidence,
     warnings: warnings,
+    diagnosticSummary: diagnosticFromRow_(diagnosticToRow_(diagnostic)),
   };
+}
+
+function createDiagnostic_(requestId, sourceType, sourceUrl, startedAt) {
+  return {
+    requestId: requestId,
+    action: 'importSource',
+    sourceType: sourceType || 'other',
+    sourceUrl: sourceUrl || '',
+    startedAt: startedAt || new Date().toISOString(),
+    trace: [],
+  };
+}
+
+function addDiagnosticStage_(diagnostic, stage, status, reasonCode, message, durationMs, details) {
+  if (!diagnostic || !Array.isArray(diagnostic.trace)) return diagnostic;
+  diagnostic.trace.push({
+    sequence: diagnostic.trace.length + 1,
+    stage: stage,
+    status: status,
+    reasonCode: reasonCode,
+    message: message,
+    durationMs: Math.max(0, Number(durationMs) || 0),
+    details: sanitizeDiagnosticDetails_(details || {}),
+  });
+  return diagnostic;
+}
+
+function sanitizeDiagnosticDetails_(details) {
+  const blockedKey = /token|secret|authorization|cookie|html|raw|payload/i;
+  const source = details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+  const sanitized = {};
+  Object.keys(source).forEach(function (key) {
+    if (blockedKey.test(key)) return;
+    const value = source[key];
+    if (value === null || ['string', 'number', 'boolean'].indexOf(typeof value) >= 0) {
+      sanitized[key] = value;
+    } else if (Array.isArray(value)) {
+      sanitized[key] = value.filter(function (item) {
+        return item === null || ['string', 'number', 'boolean'].indexOf(typeof item) >= 0;
+      });
+    } else if (value && typeof value === 'object') {
+      const nested = {};
+      Object.keys(value).forEach(function (nestedKey) {
+        if (blockedKey.test(nestedKey)) return;
+        const nestedValue = value[nestedKey];
+        if (nestedValue === null || ['string', 'number', 'boolean'].indexOf(typeof nestedValue) >= 0) {
+          nested[nestedKey] = nestedValue;
+        }
+      });
+      sanitized[key] = nested;
+    }
+  });
+  return sanitized;
+}
+
+function classifyLinkedinPage_(html, metadata) {
+  if (metadata && (metadata.name || metadata.headline || metadata.companyName)) return 'profile';
+  const source = String(html || '').toLowerCase();
+  if (/checkpoint\/challenge|security verification|challenge-page|captcha/.test(source)) return 'checkpoint';
+  if (/authwall|sign in to linkedin|login-submit|uas\/login/.test(source)) return 'authwall';
+  if (/\bn\/a\b|not available/.test(source)) return 'placeholder';
+  return 'unknown';
+}
+
+function isLinkedinProfileUrl_(value) {
+  return /^https?:\/\/([a-z0-9-]+\.)?linkedin\.com\/in\//i.test(String(value || ''));
+}
+
+function finalizeDiagnostic_(diagnostic, result) {
+  const source = result || {};
+  diagnostic.outcome = source.outcome || 'failed';
+  diagnostic.provider = source.provider || 'manual';
+  const failed = diagnostic.trace.find(function (entry) {
+    return entry.status === 'failed';
+  });
+  diagnostic.failedStage = failed ? failed.stage : '';
+  diagnostic.reasonCode = source.reasonCode || 'UNKNOWN';
+  diagnostic.message = source.message || 'Импорт завершён';
+  diagnostic.confidence = source.confidence || 'low';
+  diagnostic.completedAt = new Date().toISOString();
+  diagnostic.durationMs = Math.max(0, Date.now() - new Date(diagnostic.startedAt).getTime());
+  addDiagnosticStage_(
+    diagnostic,
+    'finalize',
+    diagnostic.outcome,
+    diagnostic.reasonCode,
+    diagnostic.message,
+    0,
+    { provider: diagnostic.provider, confidence: diagnostic.confidence },
+  );
+  return diagnostic;
 }
 
 function parseLinkedinPublicMetadata_(html, linkedinUrl) {
@@ -454,7 +759,7 @@ function linkedinMetadataToProcessDraft_(metadata) {
   return {
     title: companyName ? companyName + ' — recruiter contact' : recruiterName || 'LinkedIn contact',
     companyName: companyName,
-    role: recruiterTitle,
+    role: DEFAULT_TARGET_ROLE,
     recruiterName: recruiterName,
     recruiterTitle: recruiterTitle,
     recruiterLinkedinUrl: profileUrl,
@@ -524,15 +829,19 @@ function normalizeLinkedinActorMetadata_(item, linkedinUrl) {
   };
 }
 
-function enrichLinkedinFromPublicPage_(linkedinUrl) {
-  if (!/^https?:\/\/([a-z0-9-]+\.)?linkedin\.com\/in\//i.test(String(linkedinUrl || ''))) {
+function enrichLinkedinFromPublicPage_(linkedinUrl, diagnostic) {
+  if (!isLinkedinProfileUrl_(linkedinUrl)) {
     return {
       confidence: 'low',
       warnings: ['LinkedIn URL must point to a public linkedin.com/in profile'],
       processDraft: null,
+      reasonCode: 'INVALID_LINKEDIN_URL',
+      message: 'Ссылка LinkedIn не прошла проверку',
     };
   }
 
+  const fetchStartedAt = Date.now();
+  let fetchCompleted = false;
   try {
     const response = UrlFetchApp.fetch(linkedinUrl, {
       method: 'get',
@@ -546,60 +855,131 @@ function enrichLinkedinFromPublicPage_(linkedinUrl) {
       },
     });
     const code = response.getResponseCode();
+    const html = response.getContentText();
+    const contentType = getResponseHeader_(response, 'Content-Type');
     if (code < 200 || code >= 300) {
+      addDiagnosticStage_(diagnostic, 'public_fetch', 'failed', 'PUBLIC_HTTP_ERROR', 'LinkedIn вернул HTTP ' + code, Date.now() - fetchStartedAt, {
+        httpStatus: code,
+        contentType: contentType,
+        bodyLength: html.length,
+      });
+      addDiagnosticStage_(diagnostic, 'public_parse', 'skipped', 'PUBLIC_FETCH_FAILED', 'Разбор страницы пропущен', 0, {});
       return {
         confidence: 'low',
         warnings: ['LinkedIn public page returned HTTP ' + code],
         processDraft: null,
+        reasonCode: 'PUBLIC_HTTP_ERROR',
+        message: 'Публичная страница LinkedIn недоступна',
       };
     }
 
-    const metadata = parseLinkedinPublicMetadata_(response.getContentText(), linkedinUrl);
+    addDiagnosticStage_(diagnostic, 'public_fetch', 'success', 'PUBLIC_HTTP_OK', 'LinkedIn вернул HTML-страницу', Date.now() - fetchStartedAt, {
+      httpStatus: code,
+      contentType: contentType,
+      bodyLength: html.length,
+    });
+    const parseStartedAt = Date.now();
+    const metadata = parseLinkedinPublicMetadata_(html, linkedinUrl);
+    const pageType = classifyLinkedinPage_(html, metadata);
     if (!metadata) {
+      const pageReason = {
+        authwall: 'PUBLIC_AUTHWALL',
+        checkpoint: 'PUBLIC_CHECKPOINT',
+        placeholder: 'PUBLIC_PLACEHOLDER',
+        unknown: 'PUBLIC_NO_METADATA',
+      }[pageType] || 'PUBLIC_NO_METADATA';
+      const pageMessage = {
+        authwall: 'LinkedIn вернул страницу входа вместо публичного профиля',
+        checkpoint: 'LinkedIn запросил проверку безопасности',
+        placeholder: 'Публичная страница содержит только значения-заглушки',
+        unknown: 'В публичной странице нет данных профиля',
+      }[pageType] || 'В публичной странице нет данных профиля';
+      addDiagnosticStage_(diagnostic, 'public_parse', 'failed', pageReason, pageMessage, Date.now() - parseStartedAt, {
+        pageType: pageType,
+        hasJsonLdPerson: /application\/ld\+json/i.test(html),
+        hasOpenGraph: /property=["']og:/i.test(html),
+      });
       return {
         confidence: 'low',
         warnings: ['LinkedIn public metadata is unavailable for this profile'],
         processDraft: null,
+        reasonCode: pageReason,
+        message: pageMessage,
       };
     }
 
+    addDiagnosticStage_(diagnostic, 'public_parse', 'success', 'PUBLIC_PROFILE_PARSED', 'Публичные данные профиля распознаны', Date.now() - parseStartedAt, {
+      pageType: pageType,
+      hasJsonLdPerson: /application\/ld\+json/i.test(html),
+      hasOpenGraph: /property=["']og:/i.test(html),
+      fields: {
+        name: Boolean(metadata.name),
+        headline: Boolean(metadata.headline),
+        companyName: Boolean(metadata.companyName),
+        location: Boolean(metadata.location),
+      },
+    });
     return {
       confidence: 'medium',
       warnings: [],
       processDraft: linkedinMetadataToProcessDraft_(metadata),
+      provider: 'linkedin_public',
+      reasonCode: 'SUCCESS_PUBLIC',
+      message: 'Профиль получен из публичных данных LinkedIn',
     };
   } catch (error) {
+    addDiagnosticStage_(diagnostic, 'public_fetch', 'failed', 'PUBLIC_FETCH_EXCEPTION', 'Запрос публичной страницы завершился ошибкой', Date.now() - fetchStartedAt, {
+      errorName: error && error.name ? error.name : 'Error',
+      errorMessage: error && error.message ? error.message : String(error),
+    });
+    addDiagnosticStage_(diagnostic, 'public_parse', 'skipped', 'PUBLIC_FETCH_FAILED', 'Разбор страницы пропущен', 0, {});
     return {
       confidence: 'low',
       warnings: ['LinkedIn public page fetch failed: ' + error.message],
       processDraft: null,
+      reasonCode: 'PUBLIC_FETCH_EXCEPTION',
+      message: 'Не удалось загрузить публичную страницу LinkedIn',
     };
   }
 }
 
-function enrichLinkedin_(linkedinUrl) {
+function enrichLinkedin_(linkedinUrl, diagnostic) {
   if (!linkedinUrl) {
     return {
       confidence: 'low',
       warnings: ['LinkedIn URL is empty'],
       processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+      provider: 'manual',
+      reasonCode: 'INVALID_LINKEDIN_URL',
+      message: 'Открыт ручной черновик: ссылка LinkedIn отсутствует',
     };
   }
 
-  const publicResult = enrichLinkedinFromPublicPage_(linkedinUrl);
+  const publicResult = enrichLinkedinFromPublicPage_(linkedinUrl, diagnostic);
   if (publicResult.processDraft) return publicResult;
 
+  const configStartedAt = Date.now();
   const properties = PropertiesService.getScriptProperties();
   const token = properties.getProperty('APIFY_TOKEN');
   const actorId = properties.getProperty('APIFY_ACTOR_ID') || DEFAULT_APIFY_ACTOR_ID;
   if (!token) {
+    addDiagnosticStage_(diagnostic, 'apify_config', 'failed', 'APIFY_NOT_CONFIGURED', 'APIFY_TOKEN не настроен', Date.now() - configStartedAt, {
+      actorId: actorId,
+    });
     return {
       confidence: 'low',
       warnings: publicResult.warnings.concat(['APIFY_TOKEN is not set in Script Properties']),
       processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+      provider: 'manual',
+      reasonCode: 'APIFY_NOT_CONFIGURED',
+      message: 'Открыт ручной черновик: резервный провайдер не настроен',
     };
   }
+  addDiagnosticStage_(diagnostic, 'apify_config', 'success', 'APIFY_CONFIGURED', 'Резервный провайдер настроен', Date.now() - configStartedAt, {
+    actorId: actorId,
+  });
 
+  const fetchStartedAt = Date.now();
   try {
     const endpoint =
       'https://api.apify.com/v2/acts/' +
@@ -615,44 +995,121 @@ function enrichLinkedin_(linkedinUrl) {
       payload: JSON.stringify(buildLinkedinActorInput_(linkedinUrl)),
     });
     const code = response.getResponseCode();
+    const body = response.getContentText() || '[]';
     if (code < 200 || code >= 300) {
+      addDiagnosticStage_(diagnostic, 'apify_fetch', 'failed', 'APIFY_HTTP_ERROR', 'Apify вернул HTTP ' + code, Date.now() - fetchStartedAt, {
+        httpStatus: code,
+        contentType: getResponseHeader_(response, 'Content-Type'),
+        bodyLength: body.length,
+        actorId: actorId,
+      });
+      addDiagnosticStage_(diagnostic, 'apify_parse', 'skipped', 'APIFY_FETCH_FAILED', 'Разбор ответа Apify пропущен', 0, {});
       return {
         confidence: 'low',
         warnings: publicResult.warnings.concat(['Apify returned HTTP ' + code]),
         processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+        provider: 'manual',
+        reasonCode: 'APIFY_HTTP_ERROR',
+        message: 'Открыт ручной черновик: Apify вернул ошибку',
       };
     }
 
-    const items = JSON.parse(response.getContentText() || '[]');
+    addDiagnosticStage_(diagnostic, 'apify_fetch', 'success', 'APIFY_HTTP_OK', 'Apify вернул результат', Date.now() - fetchStartedAt, {
+      httpStatus: code,
+      contentType: getResponseHeader_(response, 'Content-Type'),
+      bodyLength: body.length,
+      actorId: actorId,
+    });
+    fetchCompleted = true;
+    const parseStartedAt = Date.now();
+    const items = JSON.parse(body);
     const item = items && items[0];
     if (!item || item.status === 'not_found') {
+      addDiagnosticStage_(diagnostic, 'apify_parse', 'failed', 'APIFY_EMPTY_DATASET', 'Apify не вернул профиль', Date.now() - parseStartedAt, {
+        itemCount: Array.isArray(items) ? items.length : 0,
+      });
       return {
         confidence: 'low',
         warnings: publicResult.warnings.concat(['LinkedIn profile was not found by enrichment provider']),
         processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+        provider: 'manual',
+        reasonCode: 'APIFY_EMPTY_DATASET',
+        message: 'Открыт ручной черновик: профиль не найден провайдером',
       };
     }
 
     const metadata = normalizeLinkedinActorMetadata_(item, linkedinUrl);
     if (!metadata.name && !metadata.headline && !metadata.companyName) {
+      addDiagnosticStage_(diagnostic, 'apify_parse', 'failed', 'APIFY_PLACEHOLDER_ONLY', 'Провайдер вернул только значения-заглушки', Date.now() - parseStartedAt, {
+        responseKeys: Object.keys(item).slice(0, 20),
+        placeholderFields: getLinkedinPlaceholderFields_(item),
+      });
       return {
         confidence: 'low',
         warnings: publicResult.warnings.concat(['LinkedIn enrichment provider returned no usable profile data']),
         processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+        provider: 'manual',
+        reasonCode: 'APIFY_PLACEHOLDER_ONLY',
+        message: 'Открыт ручной черновик: провайдер не вернул полезных данных',
       };
     }
+    addDiagnosticStage_(diagnostic, 'apify_parse', 'success', 'APIFY_PROFILE_PARSED', 'Профиль распознан из ответа Apify', Date.now() - parseStartedAt, {
+      responseKeys: Object.keys(item).slice(0, 20),
+      fields: {
+        name: Boolean(metadata.name),
+        headline: Boolean(metadata.headline),
+        companyName: Boolean(metadata.companyName),
+        location: Boolean(metadata.location),
+      },
+    });
     return {
       confidence: 'high',
       warnings: [],
       processDraft: linkedinMetadataToProcessDraft_(metadata),
+      provider: 'apify',
+      reasonCode: 'SUCCESS_APIFY',
+      message: 'Профиль получен через резервный провайдер Apify',
     };
   } catch (error) {
+    const errorDetails = {
+      errorName: error && error.name ? error.name : 'Error',
+      errorMessage: error && error.message ? error.message : String(error),
+    };
+    if (fetchCompleted) {
+      addDiagnosticStage_(diagnostic, 'apify_parse', 'failed', 'APIFY_PARSE_ERROR', 'Ответ Apify имеет неожиданный формат', 0, errorDetails);
+    } else {
+      addDiagnosticStage_(diagnostic, 'apify_fetch', 'failed', 'APIFY_REQUEST_FAILED', 'Запрос к Apify не выполнился', Date.now() - fetchStartedAt, errorDetails);
+      addDiagnosticStage_(diagnostic, 'apify_parse', 'skipped', 'APIFY_FETCH_FAILED', 'Разбор ответа Apify пропущен', 0, {});
+    }
+    const reasonCode = fetchCompleted ? 'APIFY_PARSE_ERROR' : 'APIFY_REQUEST_FAILED';
     return {
       confidence: 'low',
       warnings: publicResult.warnings.concat(['LinkedIn enrichment failed: ' + error.message]),
       processDraft: parseGenericSource_('linkedin', linkedinUrl, ''),
+      provider: 'manual',
+      reasonCode: reasonCode,
+      message: 'Открыт ручной черновик: ответ Apify не удалось обработать',
     };
   }
+}
+
+function getResponseHeader_(response, name) {
+  if (!response || typeof response.getHeaders !== 'function') return '';
+  const headers = response.getHeaders() || {};
+  const target = String(name || '').toLowerCase();
+  const key = Object.keys(headers).find(function (header) {
+    return header.toLowerCase() === target;
+  });
+  return key ? String(headers[key] || '') : '';
+}
+
+function getLinkedinPlaceholderFields_(item) {
+  const source = item && (item.basic_info || item.element || item.profile || item);
+  if (!source || typeof source !== 'object') return [];
+  return Object.keys(source).filter(function (key) {
+    const value = textValue_(source[key]).trim();
+    return Boolean(value) && !cleanLinkedinText_(value);
+  });
 }
 
 function objectOrEmpty_(value) {
@@ -688,6 +1145,8 @@ function textValue_(value) {
 function cleanLinkedinText_(value) {
   const text = textValue_(value).trim();
   const normalized = text.toLowerCase().replace(/\s+/g, ' ');
+  const compact = normalized.replace(/\s+/g, '');
+  if (/^\*+$/.test(compact)) return '';
   if (/^(?:n\/a|n\.a\.|not available|unavailable|null|undefined|unknown|-+)$/.test(normalized)) return '';
   return text;
 }
@@ -778,7 +1237,7 @@ function parseGenericSource_(sourceType, url, rawText) {
   return {
     title: title,
     companyName: '',
-    role: title,
+    role: sourceType === 'linkedin' ? DEFAULT_TARGET_ROLE : title,
     sourceType: sourceType || 'other',
     sourceUrl: url || '',
     sourceRawText: rawText || '',
@@ -810,7 +1269,7 @@ function syncCalendar_(processId, processPayload) {
     }
   }
 
-  if (process.nextActionType === 'interview' && process.nextActionTime) {
+  if (process.nextActionTime) {
     const start = calendarDateTime_(actionDate, process.nextActionTime);
     if (!start) throw new Error('Process has no valid nextActionTime');
     const end = new Date(start.getTime() + 60 * 60 * 1000);

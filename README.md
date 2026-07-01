@@ -63,7 +63,7 @@ Setup details are in `docs/setup.md`. In short:
    - `SHARED_SECRET` optional, recommended
    - `SPREADSHEET_ID` optional for standalone script
 5. Deploy as a Web App.
-6. Paste the Web App URL into the tracker `API` tab.
+6. Paste the Web App URL into `API -> Подключение`.
 
 LinkedIn enrichment first reads public JSON-LD/OpenGraph metadata directly, so normal low-volume use does not consume Apify runs. If LinkedIn blocks the public response, the backend can fall back to the currently configured free Actor and then to a manual draft.
 
@@ -74,3 +74,6 @@ The main entity is a hiring process. It keeps current fields for fast UI and sto
 - `hiringStage`: application, recruiter talk, HR screen, tech interview, client/final interview, pre-offer final, offer.
 - `workState`: active, waiting, action required, paused, lost, offer received, offer accepted, offer declined.
 - `statusReason`: client rejected, failed interview, position closed, internal hire, recruiter ghosted, project postponed, candidate withdrew, no budget, other.
+- temporary blockers remain separate from stage/state and are tracked through `blockerReason`, context, timestamps, and review date.
+
+The `API -> Диагностика` screen provides a redacted stage-by-stage trace for every import and can retry the original source. Process blockers, pause, and terminal outcomes use explicit reason catalogs; no hidden default reason is saved.

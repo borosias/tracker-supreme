@@ -27,6 +27,7 @@
 .w-full { width: 100%; }
 .max-w-md { max-width: 28rem; }
 .max-w-2xl { max-width: 42rem; }
+.max-w-3xl { max-width: 48rem; }
 .max-w-\[92vh\] { max-width: 92vh; }
 .max-h-\[92vh\] { max-height: 92vh; }
 .min-w-0 { min-width: 0; }
@@ -155,6 +156,18 @@ select option {
 .app-tabs > button {
   min-height: 44px;
   white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .app-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .app-tabs > button {
+    flex: 1 1 calc(50% - 0.25rem);
+    justify-content: center;
+  }
 }
 
 .app-main {
@@ -1035,6 +1048,170 @@ select option {
   overflow-wrap: anywhere;
 }
 
+.blocker-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.blocker-row {
+  border-radius: 6px;
+  min-height: 76px;
+}
+
+.blocker-badge {
+  border: 1px solid #8a6b31;
+  border-radius: 4px;
+  color: #e8a33d;
+  max-width: 15rem;
+}
+
+.active-blocker {
+  background: #211e18;
+  border: 1px solid #6e5830;
+  border-radius: 6px;
+}
+
+.state-action-form {
+  background: #1a1e26;
+  border: 1px solid #3d424d;
+  border-radius: 6px;
+}
+
+.diagnostic-icon-button {
+  align-items: center;
+  border: 1px solid #2b303b;
+  border-radius: 4px;
+  color: #aab0bc;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.diagnostic-icon-danger {
+  color: #e6a49b;
+}
+
+.diagnostic-list {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.diagnostic-card {
+  background: #181c23;
+  border: 1px solid #2b303b;
+  border-left: 3px solid var(--diagnostic-color, #8b92a0);
+  border-radius: 5px;
+}
+
+.diagnostic-card-summary {
+  align-items: start;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  min-height: 76px;
+  padding: 0.875rem;
+  width: 100%;
+}
+
+.diagnostic-status-dot {
+  background: var(--diagnostic-color, #8b92a0);
+  border-radius: 999px;
+  height: 8px;
+  margin-top: 0.2rem;
+  width: 8px;
+}
+
+.diagnostic-message {
+  color: #edeef0;
+}
+
+.diagnostic-details {
+  border-top: 1px solid #2b303b;
+  padding: 0.875rem;
+}
+
+.diagnostic-facts {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.diagnostic-facts span {
+  color: #aab0bc;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-facts b {
+  color: #666d7a;
+  display: block;
+  font-weight: 500;
+  margin-bottom: 0.2rem;
+}
+
+.diagnostic-trace {
+  display: grid;
+  gap: 0;
+}
+
+.diagnostic-trace li {
+  display: grid;
+  gap: 0.625rem;
+  grid-template-columns: 12px minmax(0, 1fr);
+  padding: 0.55rem 0;
+}
+
+.diagnostic-trace-state {
+  background: #c56b5d;
+  border-radius: 999px;
+  height: 8px;
+  margin-top: 0.2rem;
+  width: 8px;
+}
+
+.diagnostic-trace-success { background: #6fae8a; }
+.diagnostic-trace-skipped { background: #666d7a; }
+.diagnostic-trace-fallback { background: #e8a33d; }
+
+.diagnostic-trace pre {
+  background: #11141a;
+  border: 1px solid #2b303b;
+  color: #aab0bc;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  margin-top: 0.45rem;
+  max-height: 15rem;
+  overflow: auto;
+  padding: 0.625rem;
+  white-space: pre-wrap;
+}
+
+.diagnostic-json {
+  border: 1px solid #2b303b;
+  border-radius: 4px;
+}
+
+.diagnostic-json summary {
+  color: #aab0bc;
+  cursor: pointer;
+  min-height: 40px;
+  padding: 0.75rem;
+}
+
+.diagnostic-json pre {
+  background: #11141a;
+  border-top: 1px solid #2b303b;
+  color: #aab0bc;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+}
+
 @keyframes stage-folder-open {
   from {
     opacity: 0;
@@ -1052,6 +1229,7 @@ select option {
   .sm\:mx-6 { margin-left: 1.5rem; margin-right: 1.5rem; }
   .sm\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sm\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sm\:col-span-2 { grid-column: span 2 / span 2; }
   .sm\:items-center { align-items: center; }
 }
 
@@ -1086,6 +1264,27 @@ select option {
   .process-card-head .state-pill {
     justify-self: start;
     margin-left: 1rem;
+  }
+
+  .process-card-pills {
+    justify-content: flex-start;
+    margin-left: 1rem;
+  }
+
+  .blocker-badge {
+    max-width: calc(100vw - 4rem);
+  }
+
+  .diagnostics-panel {
+    padding: 0.75rem;
+  }
+
+  .diagnostic-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diagnostic-card-summary {
+    min-height: 88px;
   }
 
   .process-vacancy-meta {
