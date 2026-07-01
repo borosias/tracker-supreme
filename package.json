@@ -8,7 +8,7 @@
     "dev:host": "vite --host 0.0.0.0",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test apps-script/Code.test.cjs",
+    "test": "node --test apps-script/Code.test.cjs src/importDiagnostics.test.js src/processBlockers.test.js src/processDefaults.test.js src/visualSafety.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -8,7 +8,7 @@ function loadAppsScript(overrides = {}) {
   const source = fs.readFileSync(path.join(__dirname, 'Code.gs'), 'utf8');
   const sandbox = { console, ...overrides };
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox);
+  vm.runInContext(`${source}\nthis.__SHEETS = SHEETS;`, sandbox);
   return sandbox;
 }
 
@@ -102,6 +102,7 @@ test('maps public LinkedIn metadata to an actionable process draft', () => {
   assert.equal(draft.title, 'Analytical Engines — recruiter contact');
   assert.equal(draft.recruiterName, 'Ada Lovelace');
   assert.equal(draft.recruiterTitle, 'Senior Recruiter');
+  assert.equal(draft.role, 'Senior Frontend Developer');
   assert.equal(draft.companyName, 'Analytical Engines');
   assert.equal(draft.recruiterLinkedinUrl, 'https://www.linkedin.com/in/example');
   assert.equal(draft.hiringStage, 'recruiter_talk');
@@ -343,6 +344,29 @@ test('falls back to the current free Actor when public metadata is blocked', () 
   assert.equal(result.processDraft.companyName, 'Analytical Engines');
 });
 
+test('drops masked recruiter titles and keeps the default target vacancy role', () => {
+  const { cleanLinkedinText_, getLinkedinPlaceholderFields_, linkedinMetadataToProcessDraft_ } = loadAppsScript();
+
+  assert.equal(cleanLinkedinText_('******'), '');
+  assert.equal(cleanLinkedinText_('***** *** ********'), '');
+  assert.deepEqual(Array.from(getLinkedinPlaceholderFields_({ headline: '***** *** ********' })), ['headline']);
+  const draft = linkedinMetadataToProcessDraft_({
+    name: 'Ada Lovelace',
+    headline: '***** *** ********',
+    profileUrl: 'https://www.linkedin.com/in/example',
+  });
+
+  assert.equal(draft.recruiterTitle, '');
+  assert.equal(draft.role, 'Senior Frontend Developer');
+});
+
+test('uses the default target role for a manual LinkedIn fallback draft', () => {
+  const { parseGenericSource_ } = loadAppsScript();
+  const draft = parseGenericSource_('linkedin', 'https://www.linkedin.com/in/example', '');
+
+  assert.equal(draft.role, 'Senior Frontend Developer');
+});
+
 test('classifies blocked LinkedIn pages', () => {
   const { classifyLinkedinPage_ } = loadAppsScript();
 
@@ -377,4 +401,270 @@ test('adds ordered diagnostic stages without sensitive details', () => {
   assert.equal('authorization' in diagnostic.trace[0].details, false);
   assert.equal('token' in diagnostic.trace[0].details.nested, false);
   assert.equal(diagnostic.trace[0].details.nested.hasJsonLdPerson, true);
+});
+
+test('defines the persistent Diagnostics sheet contract', () => {
+  const { __SHEETS } = loadAppsScript();
+
+  assert.deepEqual(Array.from(__SHEETS.diagnostics.headers), [
+    'requestId',
+    'action',
+    'sourceType',
+    'sourceUrl',
+    'outcome',
+    'provider',
+    'failedStage',
+    'reasonCode',
+    'message',
+    'confidence',
+    'durationMs',
+    'startedAt',
+    'completedAt',
+    'traceJson',
+  ]);
+});
+
+test('defines blocker fields for processes and immutable event history', () => {
+  const { __SHEETS } = loadAppsScript();
+
+  assert.equal(__SHEETS.processes.headers.includes('blockerReason'), true);
+  assert.equal(__SHEETS.processes.headers.includes('blockerNote'), true);
+  assert.equal(__SHEETS.processes.headers.includes('blockedAt'), true);
+  assert.equal(__SHEETS.processes.headers.includes('blockerReviewDate'), true);
+  assert.equal(__SHEETS.events.headers.includes('blockerReason'), true);
+});
+
+test('schema evolution preserves existing and custom columns while appending missing fields', () => {
+  const { mergeHeaders_ } = loadAppsScript();
+
+  assert.deepEqual(
+    Array.from(mergeHeaders_(['id', 'customColumn', 'title'], ['id', 'title', 'blockerReason'])),
+    ['id', 'customColumn', 'title', 'blockerReason'],
+  );
+  assert.deepEqual(Array.from(mergeHeaders_([''], ['id', 'title'])), ['id', 'title']);
+});
+
+function createMemorySheet(headers) {
+  const rows = [];
+  return {
+    _rows: rows,
+    getLastColumn: () => headers.length,
+    getLastRow: () => rows.length + 1,
+    getRange(row, column, numRows, numColumns) {
+      return {
+        getValues() {
+          if (row === 1) return [headers.slice(column - 1, column - 1 + numColumns)];
+          return rows.slice(row - 2, row - 2 + numRows).map((item) => item.slice(column - 1, column - 1 + numColumns));
+        },
+        setValues(values) {
+          if (row === 1) {
+            values[0].forEach((value, index) => {
+              headers[column - 1 + index] = value;
+            });
+            return;
+          }
+          values.forEach((value, index) => {
+            rows[row - 2 + index] = value;
+          });
+        },
+      };
+    },
+    appendRow(row) {
+      rows.push(row);
+    },
+  };
+}
+
+test('creates a timed Calendar event for follow-up when nextActionTime is set', () => {
+  const sheets = {
+    Processes: createMemorySheet([
+      'id',
+      'title',
+      'role',
+      'nextActionType',
+      'nextActionDate',
+      'nextActionTime',
+      'calendarEventId',
+      'createdAt',
+      'updatedAt',
+    ]),
+    Events: createMemorySheet(['id', 'processId', 'type', 'title', 'note', 'calendarEventId']),
+  };
+  const spreadsheet = {
+    getSheetByName(name) {
+      return sheets[name];
+    },
+  };
+  const createdEvents = [];
+  const CalendarApp = {
+    getDefaultCalendar() {
+      return {
+        createEvent(title, start, end, options) {
+          createdEvents.push({ type: 'timed', title, start, end, options });
+          return { getId: () => 'calendar_event_1' };
+        },
+        createAllDayEvent(title, day, options) {
+          createdEvents.push({ type: 'all-day', title, day, options });
+          return { getId: () => 'calendar_event_1' };
+        },
+      };
+    },
+  };
+  const SpreadsheetApp = {
+    getActiveSpreadsheet: () => spreadsheet,
+  };
+  const PropertiesService = {
+    getScriptProperties: () => ({ getProperty: () => '' }),
+  };
+  const Utilities = { getUuid: () => 'uuid-calendar' };
+  const { syncCalendar_ } = loadAppsScript({ CalendarApp, SpreadsheetApp, PropertiesService, Utilities });
+
+  const result = syncCalendar_('proc_1', {
+    id: 'proc_1',
+    title: 'Follow up with recruiter',
+    role: 'Senior Frontend Developer',
+    nextActionType: 'follow_up',
+    nextActionDate: '2026-06-24',
+    nextActionTime: '09:30',
+  });
+
+  assert.equal(createdEvents.length, 1);
+  assert.equal(createdEvents[0].type, 'timed');
+  assert.equal(createdEvents[0].start.getFullYear(), 2026);
+  assert.equal(createdEvents[0].start.getMonth(), 5);
+  assert.equal(createdEvents[0].start.getDate(), 24);
+  assert.equal(createdEvents[0].start.getHours(), 9);
+  assert.equal(createdEvents[0].start.getMinutes(), 30);
+  assert.equal(createdEvents[0].end.getHours(), 10);
+  assert.equal(createdEvents[0].end.getMinutes(), 30);
+  assert.equal(result.process.calendarEventId, 'calendar_event_1');
+});
+
+test('serializes and parses diagnostic rows safely', () => {
+  const { diagnosticToRow_, diagnosticFromRow_ } = loadAppsScript();
+  const diagnostic = {
+    requestId: 'diag_1',
+    action: 'importSource',
+    sourceType: 'linkedin',
+    sourceUrl: 'https://www.linkedin.com/in/example',
+    outcome: 'fallback',
+    provider: 'manual',
+    failedStage: 'apify_parse',
+    reasonCode: 'APIFY_PLACEHOLDER_ONLY',
+    message: 'Провайдер вернул только значения-заглушки',
+    confidence: 'low',
+    durationMs: 411,
+    startedAt: '2026-06-22T10:00:00.000Z',
+    completedAt: '2026-06-22T10:00:00.411Z',
+    trace: [{ sequence: 1, stage: 'finalize', status: 'fallback', details: {} }],
+  };
+
+  const row = diagnosticToRow_(diagnostic);
+  const parsed = diagnosticFromRow_(row);
+  assert.equal(parsed.requestId, 'diag_1');
+  assert.equal(parsed.trace[0].stage, 'finalize');
+  assert.equal(parsed.traceCorrupted, false);
+
+  const corrupted = diagnosticFromRow_({ ...row, traceJson: '{broken' });
+  assert.deepEqual(Array.from(corrupted.trace), []);
+  assert.equal(corrupted.traceCorrupted, true);
+});
+
+test('traces an authwall fallback through Apify to a successful import', () => {
+  const calls = [];
+  const UrlFetchApp = {
+    fetch(url) {
+      calls.push(url);
+      if (calls.length === 1) {
+        return {
+          getResponseCode: () => 200,
+          getContentText: () => '<html><div class="authwall">Sign in to LinkedIn</div></html>',
+          getHeaders: () => ({ 'Content-Type': 'text/html; charset=utf-8' }),
+        };
+      }
+      return {
+        getResponseCode: () => 200,
+        getContentText: () =>
+          JSON.stringify([
+            {
+              basic_info: {
+                fullname: 'Ada Lovelace',
+                headline: 'Senior Recruiter',
+                current_company: 'Analytical Engines',
+              },
+            },
+          ]),
+        getHeaders: () => ({ 'Content-Type': 'application/json' }),
+      };
+    },
+  };
+  const PropertiesService = {
+    getScriptProperties: () => ({
+      getProperty: (key) => (key === 'APIFY_TOKEN' ? 'test-token' : ''),
+    }),
+  };
+  let sequence = 0;
+  const Utilities = { getUuid: () => `uuid-${++sequence}` };
+  const silentConsole = { log() {}, warn() {}, error() {} };
+  const api = loadAppsScript({ UrlFetchApp, PropertiesService, Utilities, console: silentConsole });
+  api.persistDiagnostic_ = () => null;
+
+  const result = api.importSource_({
+    sourceType: 'linkedin',
+    url: 'https://www.linkedin.com/in/example',
+  });
+
+  assert.equal(result.diagnosticSummary.reasonCode, 'SUCCESS_APIFY');
+  assert.equal(result.diagnosticSummary.provider, 'apify');
+  assert.deepEqual(Array.from(result.diagnosticSummary.trace, (entry) => entry.stage), [
+    'validate_input',
+    'public_fetch',
+    'public_parse',
+    'apify_config',
+    'apify_fetch',
+    'apify_parse',
+    'finalize',
+  ]);
+  assert.equal(result.diagnosticSummary.trace[2].reasonCode, 'PUBLIC_AUTHWALL');
+  assert.equal(JSON.stringify(result.diagnosticSummary).includes('test-token'), false);
+});
+
+test('keeps a successful Apify fetch distinct from an invalid JSON parse', () => {
+  let call = 0;
+  const UrlFetchApp = {
+    fetch() {
+      call += 1;
+      return call === 1
+        ? {
+            getResponseCode: () => 200,
+            getContentText: () => '<html><div class="authwall">Sign in</div></html>',
+            getHeaders: () => ({ 'Content-Type': 'text/html' }),
+          }
+        : {
+            getResponseCode: () => 200,
+            getContentText: () => '{invalid-json',
+            getHeaders: () => ({ 'Content-Type': 'application/json' }),
+          };
+    },
+  };
+  const PropertiesService = {
+    getScriptProperties: () => ({ getProperty: (key) => (key === 'APIFY_TOKEN' ? 'test-token' : '') }),
+  };
+  const api = loadAppsScript({
+    UrlFetchApp,
+    PropertiesService,
+    Utilities: { getUuid: () => 'uuid' },
+    console: { log() {}, warn() {}, error() {} },
+  });
+  api.persistDiagnostic_ = () => null;
+
+  const result = api.importSource_({ sourceType: 'linkedin', url: 'https://www.linkedin.com/in/example' });
+  const apifyStages = result.diagnosticSummary.trace.filter((entry) => entry.stage.startsWith('apify_'));
+
+  assert.deepEqual(Array.from(apifyStages, (entry) => `${entry.stage}:${entry.status}`), [
+    'apify_config:success',
+    'apify_fetch:success',
+    'apify_parse:failed',
+  ]);
+  assert.equal(result.diagnosticSummary.reasonCode, 'APIFY_PARSE_ERROR');
 });
